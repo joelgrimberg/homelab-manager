@@ -1,0 +1,19 @@
+proxmox:
+  url: "https://10.0.0.1:8006"
+  node: "pve"
+  token_id: "user@pve!tokenname"
+  token_secret: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Tag-based VM discovery: VMs/LXCs are matched by their Proxmox tags.
+# Tag your VMs in Proxmox (e.g. via pvesh set /nodes/pve/qemu/100/config --tags "infra")
+# and they'll be automatically discovered — no need to track VMIDs.
+tiers:
+  - tag: "infra"
+    tier: 1
+    name: infra
+  - tag: "control-plane"
+    tier: 2
+    name: control-plane
+  - tag: "workers"
+    tier: 3
+    name: workers

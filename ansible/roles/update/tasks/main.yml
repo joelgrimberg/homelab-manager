@@ -1,0 +1,22 @@
+---
+# OS dispatcher — routes to the right task file based on the gathered facts.
+# Runs after the implicit fact-gathering done by the playbook.
+
+- name: Show detected OS family
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} → {{ ansible_os_family }} ({{ ansible_distribution }} {{ ansible_distribution_version | default('?') }})"
+
+- name: Update Debian/Ubuntu hosts
+  ansible.builtin.include_tasks: debian.yml
+  when: ansible_os_family == "Debian"
+
+- name: Update Alpine hosts
+  ansible.builtin.include_tasks: alpine.yml
+  when: ansible_os_family == "Alpine"
+
+- name: Fail on unsupported OS family
+  ansible.builtin.fail:
+    msg: >-
+      Unsupported OS family '{{ ansible_os_family }}' on {{ inventory_hostname }}.
+      Add a task file under roles/update/tasks/ to support it.
+  when: ansible_os_family not in ["Debian", "Alpine"]

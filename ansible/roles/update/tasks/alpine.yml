@@ -1,0 +1,56 @@
+---
+# Alpine upgrade flow.
+#
+# Alpine has no `/var/run/reboot-required` marker, so we compare the running
+# kernel against the one on disk and reboot if they differ. Inside an LXC the
+# "kernel" comes from the Proxmox host, so this check never triggers a reboot
+# for containers — exactly what we want.
+
+- name: Refresh apk cache
+  community.general.apk:
+    update_cache: true
+  retries: 3
+  delay: 5
+  register: apk_cache
+  until: apk_cache is succeeded
+
+- name: Upgrade all packages
+  community.general.apk:
+    upgrade: true
+    available: true
+  register: apk_upgrade
+
+- name: Detect whether this is a container (LXC)
+  ansible.builtin.set_fact:
+    is_container: "{{ ansible_virtualization_type in ['lxc', 'container', 'podman', 'docker'] }}"
+
+- name: Get running kernel version
+  ansible.builtin.command: uname -r
+  register: running_kernel
+  changed_when: false
+  when: not is_container
+
+- name: Get installed kernel package version
+  ansible.builtin.command: apk info -v linux-lts linux-virt
+  register: installed_kernel
+  changed_when: false
+  failed_when: false
+  when: not is_container
+
+- name: Reboot if kernel was upgraded
+  ansible.builtin.reboot:
+    msg: "Reboot triggered by Ansible after kernel upgrade"
+    reboot_timeout: "{{ reboot_timeout }}"
+    connect_timeout: "{{ reboot_connect_timeout }}"
+    post_reboot_delay: "{{ reboot_post_delay }}"
+  when:
+    - not is_container
+    - running_kernel.stdout is defined
+    - installed_kernel.stdout is defined
+    - running_kernel.stdout not in installed_kernel.stdout
+
+- name: Report upgrade result
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} upgraded
+      (container={{ is_container }})

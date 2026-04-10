@@ -1,0 +1,61 @@
+version: 2
+
+builds:
+  - id: homelab-manager
+    binary: homelab-manager
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - clients/fish/*.fish
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: joelgrimberg
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    name: homelab-manager
+    homepage: "https://github.com/joelgrimberg/homelab-manager"
+    description: "Web UI and CLI to wake/sleep a Proxmox homelab"
+    license: "MIT"
+    install: |
+      bin.install "homelab-manager"
+      (share/"fish/vendor_functions.d").install "clients/fish/homelab.fish"
+      (share/"fish/vendor_functions.d").install "clients/fish/__homelab_server_url.fish"
+      (share/"fish/vendor_completions.d").install "clients/fish/homelab.completions.fish" => "homelab.fish"
+    caveats: |
+      To configure the server URL, create ~/.config/homelab-manager/config.yaml:
+
+        mkdir -p ~/.config/homelab-manager
+        echo 'server: https://your-server-url' > ~/.config/homelab-manager/config.yaml
+
+      Or set the HOMELAB_SERVER environment variable.
+    test: |
+      system bin/"homelab-manager", "--help"

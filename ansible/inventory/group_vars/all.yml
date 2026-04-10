@@ -1,0 +1,20 @@
+---
+# Global vars for all hosts in the inventory.
+
+# NOTE: ansible_user and ansible_become are set per-host in the inventory's
+# `compose:` block based on Proxmox metadata. Don't set them here.
+
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o ConnectTimeout=10
+
+ansible_become_method: sudo
+
+# Reasonable defaults for reboots
+reboot_timeout: 300            # seconds to wait for a host to come back
+reboot_connect_timeout: 30     # SSH connect timeout during reboot wait
+reboot_post_delay: 10          # pause after reboot before first check
+
+# Package manager timeouts
+package_update_timeout: 600

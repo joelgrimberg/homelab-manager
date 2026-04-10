@@ -1,0 +1,14 @@
+# Weekly OS updates for tier-1 infra VMs/LXCs.
+#
+# Wrapper sources /etc/homelab-manager/ansible.env for the Proxmox token,
+# runs the playbook, and pushes a success metric to pushgateway. Grafana
+# alerts if the metric goes stale (>8 days).
+#
+# Logs: /var/log/ansible-infra-update.log (rotated monthly, 12 keep).
+# Edit time: see ansible-infra-update.sh for details.
+
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Run weekly on Sunday at 04:00 UTC.
+0 4 * * 0 root /usr/local/bin/ansible-infra-update.sh

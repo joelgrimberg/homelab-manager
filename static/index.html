@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Homelab</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Homelab</h1>
+      <span id="state-badge" class="badge">loading</span>
+    </header>
+
+    <div class="toggle-section">
+      <span class="toggle-label" id="toggle-label-sleep">Asleep</span>
+      <label class="toggle" id="toggle">
+        <input type="checkbox" id="toggle-input">
+        <span class="slider">
+          <span class="spinner" id="spinner"></span>
+        </span>
+      </label>
+      <span class="toggle-label" id="toggle-label-wake">Awake</span>
+    </div>
+
+    <div id="tiers"></div>
+
+    <div class="advanced-toggle" id="advanced-toggle">
+      <span class="advanced-label">Instance controls</span>
+      <label class="instance-toggle">
+        <input type="checkbox" id="advanced-input">
+        <span class="instance-slider"></span>
+      </label>
+    </div>
+
+    <footer>
+      <span id="last-updated">Connecting...</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

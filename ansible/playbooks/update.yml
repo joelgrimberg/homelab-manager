@@ -1,0 +1,93 @@
+---
+# Update all tier-1 "infra" VMs/LXCs.
+#
+# Three plays:
+#   0. Pre-flight — print discovered hosts and warn about missing ones.
+#   1. dns-secondary alone — DNS is critical, verify before and after.
+#   2. Everything else in batches of 3.
+#
+# Observability metrics (runs, duration, status, last-success timestamp)
+# are pushed to the pushgateway by the wrapper script in cron/, NOT this
+# playbook, so that failed runs also report a metric. Grafana alerts if
+# `ansible_infra_update_last_success_timestamp` goes stale (>8 days).
+#
+# Usage:
+#   cd ansible/
+#   export PROXMOX_TOKEN_SECRET="..."
+#   ansible-playbook playbooks/update.yml [--check --diff] [--limit <host>]
+
+- name: Pre-flight — show discovered infra hosts
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    expected_infra_hosts:
+      - dns-secondary
+      - openbao
+      - runner
+      - omni
+      - tsidp
+      - monitoring
+      - pulse
+      - certmgr
+
+  tasks:
+    - name: List discovered infra hosts
+      ansible.builtin.debug:
+        msg: >-
+          Discovered {{ groups['tag_infra'] | default([]) | length }} infra hosts:
+          {{ groups['tag_infra'] | default([]) | sort | join(', ') }}
+
+    - name: Warn about expected hosts that are missing (stopped or untagged)
+      ansible.builtin.debug:
+        msg: >-
+          WARNING — expected but missing from inventory (probably stopped):
+          {{ expected_infra_hosts | difference(groups['tag_infra'] | default([])) | join(', ') }}
+      when: expected_infra_hosts | difference(groups['tag_infra'] | default([])) | length > 0
+
+- name: Update dns-secondary (DNS — extra care)
+  hosts: dns-secondary
+  gather_facts: true
+  become: false
+  serial: 1
+  max_fail_percentage: 0
+
+  tasks:
+    - name: Pre-check — DNS is answering
+      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.example.com
+      delegate_to: localhost
+      register: dns_precheck
+      changed_when: false
+      check_mode: false        # always run, even in --check mode (read-only)
+      failed_when: dns_precheck.rc != 0 or dns_precheck.stdout == ""
+
+    - name: Run update role
+      ansible.builtin.include_role:
+        name: update
+
+    - name: Post-check — wait for DNS to respond again
+      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.example.com
+      delegate_to: localhost
+      register: dns_postcheck
+      changed_when: false
+      check_mode: false        # always run, even in --check mode (read-only)
+      retries: 30
+      delay: 5
+      until: dns_postcheck.rc == 0 and dns_postcheck.stdout != ""
+
+- name: Update all other infra hosts
+  hosts: tag_infra
+  gather_facts: true
+  become: false
+  serial: 3
+  max_fail_percentage: 30
+
+  tasks:
+    - name: Skip dns-secondary (already handled by the previous play)
+      ansible.builtin.meta: end_host
+      when: inventory_hostname == "dns-secondary"
+
+    - name: Run update role
+      ansible.builtin.include_role:
+        name: update

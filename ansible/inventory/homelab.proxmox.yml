@@ -1,0 +1,60 @@
+---
+# Dynamic inventory from Proxmox API.
+#
+# Requires env vars:
+#   PROXMOX_TOKEN_SECRET  — token secret for the API user
+#
+# Usage:
+#   ansible-inventory --graph
+#
+plugin: community.proxmox.proxmox
+url: https://10.0.0.1:8006
+user: user@pve
+token_id: tokenname
+token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+validate_certs: false
+
+# Include both QEMU VMs and LXC containers
+want_facts: true
+want_proxmox_nodes_ansible_host: false
+qemu_extended_statuses: false
+
+# Only include running instances — skip stopped VMs automatically
+filters:
+  - proxmox_status == "running"
+
+# Build groups from Proxmox tags: tag `infra` → group `tag_infra`
+keyed_groups:
+  - key: proxmox_tags_parsed
+    prefix: tag
+    separator: _
+
+# Compose host variables from Proxmox metadata.
+#
+# ansible_host:
+#   - VMs with cloud-init expose `proxmox_ipconfig0.ip` (e.g. "192.168.0.20/24")
+#   - LXCs with static IPs expose `proxmox_net0.ip`
+#   - LXCs with `ip=dhcp` will produce "dhcp" here — handle them via
+#     host_vars/<name>.yml until they get static IPs / DHCP reservations.
+#   The CIDR suffix (`/24`) is stripped, with proxmox_name as a last-resort
+#   fallback.
+#
+# ansible_user:
+#   - VMs (have `proxmox_smbios1`) → use the cloud-init user from
+#     `proxmox_ciuser` if set, otherwise the Ubuntu cloud image default
+#     of `ubuntu` (cloud-init Ubuntu disables root login).
+#   - LXCs (no smbios1) → root.
+#
+# ansible_become:
+#   - VMs → true (we logged in as a regular user, sudo to root for apt)
+#   - LXCs → false (already root)
+compose:
+  ansible_host: >-
+    (proxmox_ipconfig0.ip | default(proxmox_net0.ip | default(proxmox_name)))
+    | regex_replace('/.*$', '')
+  ansible_user: >-
+    proxmox_ciuser | default('ubuntu' if proxmox_smbios1 is defined else 'root')
+  ansible_become: proxmox_smbios1 is defined
+
+# Tolerate missing guest agent data (LXCs don't have guest agent)
+strict: false

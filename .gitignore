@@ -1,0 +1,7 @@
+homelab-manager
+config.yaml
+.claude/
+.playwright-mcp/
+dist/
+CLAUDE.md
+FORJOEL.md
