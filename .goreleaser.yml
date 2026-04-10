@@ -37,7 +37,8 @@ changelog:
       - "^chore:"
 
 brews:
-  - repository:
+  - directory: Formula
+    repository:
       owner: joelgrimberg
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
