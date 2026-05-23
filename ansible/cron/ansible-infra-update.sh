@@ -23,7 +23,7 @@ set -u
 ENV_FILE=/etc/homelab-manager/ansible.env
 PLAYBOOK=/opt/homelab-manager/ansible/playbooks/update.yml
 LOG=/var/log/ansible-infra-update.log
-PUSHGATEWAY=http://10.0.0.6:9091
+PUSHGATEWAY=http://192.168.0.6:9091
 JOB=ansible_infra_update
 
 if [ ! -r "$ENV_FILE" ]; then

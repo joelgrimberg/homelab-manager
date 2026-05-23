@@ -1,4 +1,4 @@
 ---
 # tsidp (LXC 108) — DHCP, current lease as of last update.
 # TODO: set a Unifi DHCP reservation or convert to static IP, then delete this file.
-ansible_host: 10.0.0.144
+ansible_host: 192.168.0.144

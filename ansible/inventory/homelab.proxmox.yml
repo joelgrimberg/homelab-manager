@@ -8,7 +8,7 @@
 #   ansible-inventory --graph
 #
 plugin: community.proxmox.proxmox
-url: https://10.0.0.1:8006
+url: https://192.168.0.3:8006
 user: user@pve
 token_id: tokenname
 token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
