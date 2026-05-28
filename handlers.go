@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,11 +37,20 @@ type StatusResponse struct {
 	Tiers         []TierStatus `json:"tiers"`
 }
 
-// Orchestrator manages wake/sleep operations and tracks state.
-type Orchestrator struct {
+// discoveryState is the snapshot of discovered instances and tier names.
+// Treated as immutable once stored — Refresh swaps in a brand-new value
+// rather than mutating the slice or map, so readers can deref the pointer
+// without locking.
+type discoveryState struct {
 	instances []Instance
 	tierNames map[int]string
-	client    ProxmoxAPI
+}
+
+// Orchestrator manages wake/sleep operations and tracks state.
+type Orchestrator struct {
+	state    atomic.Pointer[discoveryState]
+	tierDefs []TierConfig
+	client   ProxmoxAPI
 
 	mu            sync.Mutex
 	transitioning bool
@@ -56,11 +67,48 @@ type ProxmoxAPI interface {
 	ListLXCs() ([]ProxmoxInstance, error)
 }
 
-func NewOrchestrator(instances []Instance, tierNames map[int]string, client ProxmoxAPI) *Orchestrator {
-	return &Orchestrator{
-		instances: instances,
-		tierNames: tierNames,
-		client:    client,
+func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []TierConfig, client ProxmoxAPI) *Orchestrator {
+	o := &Orchestrator{
+		tierDefs: tierDefs,
+		client:   client,
+	}
+	o.state.Store(&discoveryState{instances: instances, tierNames: tierNames})
+	return o
+}
+
+// Refresh re-discovers instances from Proxmox and atomically swaps in the
+// new state. Skipped if a transition is in progress, to avoid mutating the
+// instance list while doWake/doSleep is iterating over it.
+func (o *Orchestrator) Refresh() error {
+	o.mu.Lock()
+	inTransit := o.transitioning
+	o.mu.Unlock()
+	if inTransit {
+		return nil
+	}
+
+	instances, tierNames, err := DiscoverInstances(o.client, o.tierDefs)
+	if err != nil {
+		return err
+	}
+	o.state.Store(&discoveryState{instances: instances, tierNames: tierNames})
+	return nil
+}
+
+// RunRefreshLoop calls Refresh on a fixed interval until ctx is cancelled.
+// Intended to run in its own goroutine.
+func (o *Orchestrator) RunRefreshLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := o.Refresh(); err != nil {
+				log.Printf("discovery refresh failed: %v", err)
+			}
+		}
 	}
 }
 
@@ -72,8 +120,9 @@ func (o *Orchestrator) isTransitioning() bool {
 
 // tiers returns sorted unique tier numbers.
 func (o *Orchestrator) tiers() []int {
+	s := o.state.Load()
 	seen := map[int]bool{}
-	for _, inst := range o.instances {
+	for _, inst := range s.instances {
 		seen[inst.Tier] = true
 	}
 	tiers := make([]int, 0, len(seen))
@@ -86,9 +135,10 @@ func (o *Orchestrator) tiers() []int {
 
 // findInstance returns the instance with the given VMID, or nil if not found.
 func (o *Orchestrator) findInstance(vmid int) *Instance {
-	for i := range o.instances {
-		if o.instances[i].VMID == vmid {
-			return &o.instances[i]
+	s := o.state.Load()
+	for i := range s.instances {
+		if s.instances[i].VMID == vmid {
+			return &s.instances[i]
 		}
 	}
 	return nil
@@ -96,8 +146,9 @@ func (o *Orchestrator) findInstance(vmid int) *Instance {
 
 // instancesByTier returns instances for a given tier.
 func (o *Orchestrator) instancesByTier(tier int) []Instance {
+	s := o.state.Load()
 	var result []Instance
-	for _, inst := range o.instances {
+	for _, inst := range s.instances {
 		if inst.Tier == tier {
 			result = append(result, inst)
 		}
@@ -136,6 +187,7 @@ func computeState(tiers []TierStatus, transitioning bool) string {
 
 // Status queries all instances and returns the current state.
 func (o *Orchestrator) Status() StatusResponse {
+	s := o.state.Load()
 	tiers := o.tiers()
 	tierStatuses := make([]TierStatus, 0, len(tiers))
 
@@ -157,7 +209,7 @@ func (o *Orchestrator) Status() StatusResponse {
 			})
 		}
 
-		name := o.tierNames[tier]
+		name := s.tierNames[tier]
 		if name == "" {
 			name = "unnamed"
 		}
@@ -269,7 +321,7 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 	}()
 
 	if action == "start" {
-		log.Printf("waking tier %d (%s): %d instances", tier, o.tierNames[tier], len(instances))
+		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 		for _, inst := range instances {
 			if err := o.client.Start(inst); err != nil {
 				log.Printf("error starting %s (%d): %v", inst.Name, inst.VMID, err)
@@ -280,7 +332,7 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 		return
 	}
 
-	log.Printf("sleeping tier %d (%s): %d instances", tier, o.tierNames[tier], len(instances))
+	log.Printf("sleeping tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 	for _, inst := range instances {
 		if err := o.client.Stop(inst); err != nil {
 			log.Printf("error stopping %s (%d): %v", inst.Name, inst.VMID, err)
@@ -306,7 +358,7 @@ func (o *Orchestrator) doWake() {
 		o.mu.Unlock()
 
 		instances := o.instancesByTier(tier)
-		log.Printf("waking tier %d (%s): %d instances", tier, o.tierNames[tier], len(instances))
+		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 
 		// Fire all start commands in this tier
 		for _, inst := range instances {
@@ -346,7 +398,7 @@ func (o *Orchestrator) doSleep() {
 		o.mu.Unlock()
 
 		instances := o.instancesByTier(tier)
-		log.Printf("sleeping tier %d (%s): %d instances", tier, o.tierNames[tier], len(instances))
+		log.Printf("sleeping tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 
 		// Fire all stop commands in this tier
 		for _, inst := range instances {

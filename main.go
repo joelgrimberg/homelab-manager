@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 )
 
 //go:embed static
@@ -74,7 +76,8 @@ func cmdServe(args []string) {
 	}
 	log.Printf("discovered %d instances across %d tiers", len(instances), len(tierNames))
 
-	orch := NewOrchestrator(instances, tierNames, client)
+	orch := NewOrchestrator(instances, tierNames, cfg.TierDefs, client)
+	go orch.RunRefreshLoop(context.Background(), 60*time.Second)
 
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {

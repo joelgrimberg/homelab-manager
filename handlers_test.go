@@ -101,7 +101,7 @@ func TestComputeState(t *testing.T) {
 func TestHandleStatusAllRunning(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 101: "running", 200: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestHandleStatusAllRunning(t *testing.T) {
 func TestHandleStatusAllStopped(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -153,7 +153,7 @@ func TestHandleStatusAllStopped(t *testing.T) {
 func TestHandleStatusMixed(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 101: "stopped", 200: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -167,10 +167,89 @@ func TestHandleStatusMixed(t *testing.T) {
 	}
 }
 
+func TestRefreshReplacesDiscovery(t *testing.T) {
+	// Start with two infra-tagged VMs.
+	mock := &mockProxmox{
+		statuses: map[int]string{100: "running", 101: "running"},
+		vms: []ProxmoxInstance{
+			{VMID: 100, Name: "vm-a", Status: "running", Tags: "infra", Type: "qemu"},
+			{VMID: 101, Name: "vm-b", Status: "running", Tags: "infra", Type: "qemu"},
+		},
+	}
+	tierDefs := []TierConfig{{Tag: "infra", Tier: 1, Name: "infra"}}
+	instances, tierNames, err := DiscoverInstances(mock, tierDefs)
+	if err != nil {
+		t.Fatalf("initial discovery: %v", err)
+	}
+	orch := NewOrchestrator(instances, tierNames, tierDefs, mock)
+
+	// Proxmox state changes: vm-b is gone, vm-c appears.
+	mock.mu.Lock()
+	mock.vms = []ProxmoxInstance{
+		{VMID: 100, Name: "vm-a", Status: "running", Tags: "infra", Type: "qemu"},
+		{VMID: 102, Name: "vm-c", Status: "running", Tags: "infra", Type: "qemu"},
+	}
+	mock.statuses = map[int]string{100: "running", 102: "running"}
+	mock.mu.Unlock()
+
+	if err := orch.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	resp := orch.Status()
+	if len(resp.Tiers) != 1 || len(resp.Tiers[0].Instances) != 2 {
+		t.Fatalf("after refresh: got %d tiers, want 1 with 2 instances", len(resp.Tiers))
+	}
+
+	vmids := map[int]bool{}
+	for _, inst := range resp.Tiers[0].Instances {
+		vmids[inst.VMID] = true
+	}
+	if !vmids[100] || !vmids[102] || vmids[101] {
+		t.Errorf("vmids after refresh = %v, want {100, 102} (no 101)", vmids)
+	}
+}
+
+func TestRefreshSkippedDuringTransition(t *testing.T) {
+	mock := &mockProxmox{
+		statuses: map[int]string{100: "stopped"},
+		vms: []ProxmoxInstance{
+			{VMID: 100, Name: "vm-a", Status: "stopped", Tags: "infra", Type: "qemu"},
+		},
+	}
+	tierDefs := []TierConfig{{Tag: "infra", Tier: 1, Name: "infra"}}
+	instances, tierNames, _ := DiscoverInstances(mock, tierDefs)
+	orch := NewOrchestrator(instances, tierNames, tierDefs, mock)
+
+	if !orch.Wake() {
+		t.Fatal("Wake() returned false")
+	}
+
+	// Swap underlying Proxmox state — Refresh must NOT pick this up while
+	// a transition is in flight.
+	mock.mu.Lock()
+	mock.vms = []ProxmoxInstance{
+		{VMID: 200, Name: "vm-z", Status: "running", Tags: "infra", Type: "qemu"},
+	}
+	mock.mu.Unlock()
+
+	if err := orch.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// findInstance(100) should still resolve (old snapshot retained).
+	if inst := orch.findInstance(100); inst == nil {
+		t.Error("findInstance(100) = nil after Refresh-during-transition; old state should be retained")
+	}
+	if inst := orch.findInstance(200); inst != nil {
+		t.Error("findInstance(200) != nil; Refresh should have been skipped")
+	}
+}
+
 func TestHandleStatusMethodNotAllowed(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -184,7 +263,7 @@ func TestHandleStatusMethodNotAllowed(t *testing.T) {
 func TestHandleWake(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/wake", nil)
 	w := httptest.NewRecorder()
@@ -209,7 +288,7 @@ func TestHandleWake(t *testing.T) {
 func TestHandleWakeConflict(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	// Start first wake
 	req := httptest.NewRequest("POST", "/api/wake", nil)
@@ -233,7 +312,7 @@ func TestHandleWakeConflict(t *testing.T) {
 func TestHandleSleep(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 101: "running", 200: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/sleep", nil)
 	w := httptest.NewRecorder()
@@ -247,7 +326,7 @@ func TestHandleSleep(t *testing.T) {
 func TestHandleWakeMethodNotAllowed(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/wake", nil)
 	w := httptest.NewRecorder()
@@ -261,7 +340,7 @@ func TestHandleWakeMethodNotAllowed(t *testing.T) {
 func TestHandleInstanceStart(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/instance/100/start", nil)
 	w := httptest.NewRecorder()
@@ -286,7 +365,7 @@ func TestHandleInstanceStart(t *testing.T) {
 func TestHandleInstanceStop(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 101: "running", 200: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/instance/200/stop", nil)
 	w := httptest.NewRecorder()
@@ -304,7 +383,7 @@ func TestHandleInstanceStop(t *testing.T) {
 func TestHandleInstanceNotFound(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/instance/999/start", nil)
 	w := httptest.NewRecorder()
@@ -318,7 +397,7 @@ func TestHandleInstanceNotFound(t *testing.T) {
 func TestHandleInstanceConflictDuringTransition(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	// Start a full wake first
 	orch.Wake()
@@ -335,7 +414,7 @@ func TestHandleInstanceConflictDuringTransition(t *testing.T) {
 func TestHandleInstanceInvalidAction(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/instance/100/restart", nil)
 	w := httptest.NewRecorder()
@@ -349,7 +428,7 @@ func TestHandleInstanceInvalidAction(t *testing.T) {
 func TestHandleTierWake(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/tier/1/wake", nil)
 	w := httptest.NewRecorder()
@@ -388,7 +467,7 @@ func TestHandleTierWake(t *testing.T) {
 func TestHandleTierSleep(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 101: "running", 200: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/tier/2/sleep", nil)
 	w := httptest.NewRecorder()
@@ -420,7 +499,7 @@ func TestHandleTierSleep(t *testing.T) {
 func TestHandleTierUnknown(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/tier/99/wake", nil)
 	w := httptest.NewRecorder()
@@ -434,7 +513,7 @@ func TestHandleTierUnknown(t *testing.T) {
 func TestHandleTierConflictDuringMasterTransition(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	// Start a full wake first
 	orch.Wake()
@@ -451,7 +530,7 @@ func TestHandleTierConflictDuringMasterTransition(t *testing.T) {
 func TestHandleTierInvalidAction(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running"})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/tier/1/restart", nil)
 	w := httptest.NewRecorder()
@@ -465,7 +544,7 @@ func TestHandleTierInvalidAction(t *testing.T) {
 func TestHandleTierInvalidTierNumber(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("POST", "/api/tier/abc/wake", nil)
 	w := httptest.NewRecorder()
@@ -479,7 +558,7 @@ func TestHandleTierInvalidTierNumber(t *testing.T) {
 func TestHandleTierMethodNotAllowed(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/tier/1/wake", nil)
 	w := httptest.NewRecorder()
@@ -493,7 +572,7 @@ func TestHandleTierMethodNotAllowed(t *testing.T) {
 func TestHandleInstanceMethodNotAllowed(t *testing.T) {
 	mock := newMockProxmox(map[int]string{})
 	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, mock)
+	orch := NewOrchestrator(instances, tierNames, nil, mock)
 
 	req := httptest.NewRequest("GET", "/api/instance/100/start", nil)
 	w := httptest.NewRecorder()
