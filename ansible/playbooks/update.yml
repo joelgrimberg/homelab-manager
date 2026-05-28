@@ -29,7 +29,6 @@
       - omni
       - tsidp
       - monitoring
-      - pulse
       - certmgr
 
   tasks:
@@ -55,7 +54,7 @@
 
   tasks:
     - name: Pre-check — DNS is answering
-      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.example.com
+      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.grimbergenv.nl
       delegate_to: localhost
       register: dns_precheck
       changed_when: false
@@ -67,7 +66,7 @@
         name: update
 
     - name: Post-check — wait for DNS to respond again
-      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.example.com
+      ansible.builtin.command: dig +short +tries=1 +time=3 @{{ ansible_host }} pve.grimbergenv.nl
       delegate_to: localhost
       register: dns_postcheck
       changed_when: false
