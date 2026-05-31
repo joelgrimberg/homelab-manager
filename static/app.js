@@ -666,6 +666,17 @@
 
   initPWA();
 
+  // Pause the hero video when the tab/PWA goes hidden to save CPU.
+  document.addEventListener("visibilitychange", function () {
+    var v = document.querySelector(".hero-video");
+    if (!v) return;
+    if (document.hidden) {
+      v.pause();
+    } else {
+      v.play().catch(function () { /* autoplay block: ignore */ });
+    }
+  });
+
   // Start polling
   fetchStatus();
 })();

@@ -27,6 +27,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Desktop hero video — hidden by default; activated at ≥900px. The MP4 is
+   served from the LXC state dir, not embedded in the binary. */
+.hero-video, .hero-overlay { display: none; }
+
+@media (min-width: 900px) {
+  body { background: transparent; }
+  .hero-video {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    z-index: -2;
+  }
+  .hero-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center,
+                                rgba(0,0,0,0.45) 0%,
+                                rgba(0,0,0,0.82) 100%);
+    z-index: -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-video, .hero-overlay { display: none; }
+}
+
 .container {
   max-width: 500px;
   margin: 0 auto;

@@ -104,6 +104,15 @@ func cmdServe(args []string) {
 	}
 
 	mux := http.NewServeMux()
+	// Hero media is served from the state dir (kept out of the embedded
+	// static FS because the asset may be SpaceX-copyrighted and the public
+	// binary shouldn't ship it). Missing files fall through to 404.
+	for _, name := range []string{"hero.mp4", "hero.jpg"} {
+		path := filepath.Join(*stateDir, name)
+		mux.HandleFunc("/"+name, func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, path)
+		})
+	}
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
