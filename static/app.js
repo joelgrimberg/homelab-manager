@@ -11,16 +11,14 @@
   let advancedMode = false;
 
   const badge = document.getElementById("state-badge");
-  const toggle = document.getElementById("toggle");
-  const toggleInput = document.getElementById("toggle-input");
+  const toggle = document.getElementById("mode-toggle");
+  const toggleInput = document.getElementById("mode-input");
   const spinner = document.getElementById("spinner");
   const tiersEl = document.getElementById("tiers");
   const lastUpdated = document.getElementById("last-updated");
-  const labelSleep = document.getElementById("toggle-label-sleep");
-  const labelWake = document.getElementById("toggle-label-wake");
+  const labelAwake = document.getElementById("mode-label-awake");
+  const labelNight = document.getElementById("mode-label-night");
   const advancedInput = document.getElementById("advanced-input");
-  const nightToggleEl = document.getElementById("night-toggle");
-  const nightInput = document.getElementById("night-input");
   const snoozeCard = document.getElementById("snooze-card");
   const snoozeLabel = document.getElementById("snooze-label");
   const snoozeActions = document.getElementById("snooze-actions");
@@ -61,36 +59,15 @@
     if (currentState) renderTiers(currentState.tiers);
   });
 
+  // The big toggle controls Night mode: ON = night (only exempt running),
+  // OFF = awake. POSTs /api/night/sleep or /api/night/wake accordingly.
   toggleInput.addEventListener("change", function () {
     if (toggle.classList.contains("disabled")) {
       toggleInput.checked = !toggleInput.checked;
       return;
     }
-
-    const action = toggleInput.checked ? "wake" : "sleep";
+    const action = toggleInput.checked ? "sleep" : "wake";
     toggle.classList.add("disabled", "transitioning");
-
-    fetch("/api/" + action, { method: "POST" })
-      .then(function (resp) {
-        if (!resp.ok) throw new Error("Failed to " + action);
-        pollInterval = POLL_FAST;
-        schedulePoll();
-      })
-      .catch(function (err) {
-        console.error(err);
-        toggleInput.checked = !toggleInput.checked;
-        toggle.classList.remove("disabled", "transitioning");
-        showError("Failed to " + action + " homelab");
-      });
-  });
-
-  nightInput.addEventListener("change", function () {
-    if (nightInput.disabled) {
-      nightInput.checked = !nightInput.checked;
-      return;
-    }
-    const action = nightInput.checked ? "sleep" : "wake";
-    nightInput.disabled = true;
 
     fetch("/api/night/" + action, { method: "POST" })
       .then(function (resp) {
@@ -104,8 +81,8 @@
       })
       .catch(function (err) {
         console.error(err);
-        nightInput.checked = !nightInput.checked;
-        nightInput.disabled = false;
+        toggleInput.checked = !toggleInput.checked;
+        toggle.classList.remove("disabled", "transitioning");
         showError("Failed to toggle night mode: " + err.message);
       });
   });
@@ -148,11 +125,13 @@
     badge.textContent = data.state;
     badge.className = "badge " + data.state;
 
-    // Toggle
     const isAwake = data.state === "awake";
-    const isSleeping = data.state === "asleep";
     const isNight = data.state === "night";
-    toggleInput.checked = isAwake || (data.transitioning && data.state === "transitioning" && toggleInput.checked);
+
+    // Toggle: ON = night, OFF = awake. Other states leave whatever the user
+    // last set, except we force a clear position for the two pure states.
+    if (data.state === "awake") toggleInput.checked = false;
+    else if (data.state === "night") toggleInput.checked = true;
 
     if (data.transitioning) {
       toggle.classList.add("disabled", "transitioning");
@@ -160,34 +139,11 @@
       toggle.classList.remove("disabled", "transitioning");
     }
 
-    // If mixed but not transitioning, allow toggling
-    if (data.state === "mixed") {
-      toggle.classList.remove("disabled");
-      // Determine toggle position based on majority
-      var running = 0, total = 0;
-      data.tiers.forEach(function (tier) {
-        tier.instances.forEach(function (inst) {
-          total++;
-          if (inst.status === "running") running++;
-        });
-      });
-      toggleInput.checked = running > total / 2;
-    }
-
-    // Night-mode toggle: show only when configured server-side
-    if (data.night_mode_enabled) {
-      nightToggleEl.hidden = false;
-      nightInput.checked = isNight;
-      nightInput.disabled = !!data.transitioning;
-    } else {
-      nightToggleEl.hidden = true;
-    }
-
     renderSnoozeBanner(data);
 
-    // Labels
-    labelSleep.classList.toggle("active", isSleeping);
-    labelWake.classList.toggle("active", isAwake);
+    // Labels: highlight the side matching current state
+    labelAwake.classList.toggle("active", isAwake);
+    labelNight.classList.toggle("active", isNight);
 
     // Tiers
     renderTiers(data.tiers);

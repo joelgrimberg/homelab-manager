@@ -23,10 +23,8 @@ const usage = `Usage: homelab-manager <command> [flags]
 Commands:
   serve                            Start the web server
   status                           Show current homelab status
-  wake                             Wake up the entire homelab
-  sleep                            Put the entire homelab to sleep
-  night wake                       Wake everything that night-mode put to sleep
-  night sleep                      Sleep everything except night-mode keep-awake tags
+  night wake                       Exit night mode (wake non-exempt VMs)
+  night sleep                      Enter night mode (sleep non-exempt VMs)
   tier wake <tier>                 Wake a single tier
   tier sleep <tier>                Sleep a single tier
   instance start <vmid>            Start a single instance
@@ -45,10 +43,6 @@ func main() {
 		cmdServe(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
-	case "wake":
-		cmdTransition("wake", os.Args[2:])
-	case "sleep":
-		cmdTransition("sleep", os.Args[2:])
 	case "tier":
 		cmdTier(os.Args[2:])
 	case "instance":
@@ -126,8 +120,6 @@ func cmdServe(args []string) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	})
-	mux.HandleFunc("/api/wake", orch.HandleWake)
-	mux.HandleFunc("/api/sleep", orch.HandleSleep)
 	mux.HandleFunc("/api/tier/", orch.HandleTierAction)
 	mux.HandleFunc("/api/instance/", orch.HandleInstanceAction)
 	mux.HandleFunc("/api/night/", orch.HandleNightAction)
@@ -150,17 +142,6 @@ func cmdStatus(args []string) {
 	flags.Parse(args)
 
 	if err := runStatus(ResolveServer(*server)); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func cmdTransition(action string, args []string) {
-	flags := flag.NewFlagSet(action, flag.ExitOnError)
-	server := flags.String("server", "", "server URL")
-	flags.Parse(args)
-
-	if err := runTransition(ResolveServer(*server), action); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

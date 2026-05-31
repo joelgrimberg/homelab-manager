@@ -38,27 +38,6 @@ func apiGetStatus(serverURL string) (StatusResponse, error) {
 	return status, nil
 }
 
-func apiPostAction(serverURL, action string) error {
-	resp, err := http.Post(serverURL+"/api/"+action, "", nil)
-	if err != nil {
-		return fmt.Errorf("reaching server: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response: %w", err)
-	}
-
-	if resp.StatusCode == http.StatusConflict {
-		return fmt.Errorf("transition already in progress")
-	}
-	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
-	}
-	return nil
-}
-
 // apiPostTier hits POST /api/tier/{tier}/{action}.
 func apiPostTier(serverURL string, tier int, action string) error {
 	url := fmt.Sprintf("%s/api/tier/%d/%s", serverURL, tier, action)
@@ -244,7 +223,11 @@ func runStatus(serverURL string) error {
 	return nil
 }
 
-// --- runTransition: Bubble Tea live TUI ---
+// --- transitionModel: Bubble Tea live TUI ---
+//
+// Used by runTier and runNight. The caller POSTs the action before
+// launching the model; the model only polls /api/status until the
+// transition flag clears.
 
 type tickMsg time.Time
 type statusMsg StatusResponse
@@ -254,7 +237,6 @@ type transitionModel struct {
 	serverURL string
 	action    string // "wake" or "sleep"
 	label     string // optional override for the title (e.g. "Tier 2")
-	skipPost  bool   // if true, don't POST — caller already did
 	status    StatusResponse
 	spinner   spinner.Model
 	done      bool
@@ -274,17 +256,7 @@ func newTransitionModel(serverURL, action string) transitionModel {
 }
 
 func (m transitionModel) Init() tea.Cmd {
-	if m.skipPost {
-		return tea.Batch(m.spinner.Tick, m.fetchOnce)
-	}
-	return tea.Batch(m.spinner.Tick, m.postAction)
-}
-
-func (m transitionModel) postAction() tea.Msg {
-	if err := apiPostAction(m.serverURL, m.action); err != nil {
-		return errMsg(err)
-	}
-	return m.fetchOnce()
+	return tea.Batch(m.spinner.Tick, m.fetchOnce)
 }
 
 func (m transitionModel) fetchOnce() tea.Msg {
@@ -397,19 +369,6 @@ func (m transitionModel) View() string {
 	return b.String()
 }
 
-func runTransition(serverURL, action string) error {
-	m := newTransitionModel(serverURL, action)
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
-	if err != nil {
-		return err
-	}
-	if fm, ok := finalModel.(transitionModel); ok && fm.err != nil {
-		return fm.err
-	}
-	return nil
-}
-
 // runTier triggers a single-tier wake/sleep and waits (live TUI) for completion.
 func runTier(serverURL, action string, tier int) error {
 	if err := apiPostTier(serverURL, tier, action); err != nil {
@@ -417,7 +376,6 @@ func runTier(serverURL, action string, tier int) error {
 	}
 
 	m := newTransitionModel(serverURL, action)
-	m.skipPost = true
 	m.label = fmt.Sprintf("Tier %d", tier)
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
@@ -437,7 +395,6 @@ func runNight(serverURL, action string) error {
 	}
 
 	m := newTransitionModel(serverURL, action)
-	m.skipPost = true
 	m.label = "Night mode"
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()

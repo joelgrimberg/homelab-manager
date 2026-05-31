@@ -140,8 +140,8 @@ h1 {
   text-align: center;
 }
 
-#toggle-label-sleep.active { color: var(--text); }
-#toggle-label-wake.active { color: var(--text); }
+#mode-label-awake.active { color: var(--text); }
+#mode-label-night.active { color: var(--text); }
 
 /* iOS-style toggle */
 .toggle {
@@ -184,7 +184,7 @@ h1 {
 }
 
 .toggle input:checked + .slider {
-  background: var(--green);
+  background: var(--indigo);
 }
 
 .toggle input:checked + .slider::before {
@@ -478,26 +478,6 @@ h1 {
 .advanced-label {
   font-size: 14px;
   color: var(--text-secondary);
-}
-
-/* Night-mode toggle (same row style as advanced-toggle, sits above tiers) */
-.night-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  margin-bottom: 20px;
-  background: var(--surface);
-  border-radius: 12px;
-}
-
-.night-label {
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-
-.night-toggle input:checked + .instance-slider {
-  background: var(--indigo);
 }
 
 /* Snooze banner */

@@ -14,8 +14,6 @@ import (
 type ActionRunner interface {
 	NightSleep() (bool, bool)
 	NightWake() (bool, bool)
-	Wake() bool
-	Sleep() bool
 }
 
 // Notifier abstracts PushManager for tests.
@@ -154,14 +152,6 @@ func (s *Scheduler) dispatchAction(e ScheduleEntry) {
 		} else if !started {
 			log.Printf("scheduler: %s night_wake skipped — already transitioning", e.Name)
 		}
-	case "wake":
-		if !s.orch.Wake() {
-			log.Printf("scheduler: %s wake skipped — already transitioning", e.Name)
-		}
-	case "sleep":
-		if !s.orch.Sleep() {
-			log.Printf("scheduler: %s sleep skipped — already transitioning", e.Name)
-		}
 	}
 }
 
@@ -190,9 +180,9 @@ func (s *Scheduler) NextFires() map[string]time.Time {
 
 func validateAction(a string) error {
 	switch a {
-	case "", "night_sleep", "night_wake", "wake", "sleep":
+	case "", "night_sleep", "night_wake":
 		return nil
 	default:
-		return fmt.Errorf("unknown action %q (must be night_sleep, night_wake, wake, sleep, or empty)", a)
+		return fmt.Errorf("unknown action %q (must be night_sleep, night_wake, or empty)", a)
 	}
 }

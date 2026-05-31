@@ -329,36 +329,6 @@ func (o *Orchestrator) exemptVMIDs() map[int]bool {
 	return result
 }
 
-// Wake starts all instances tier by tier (1→4).
-func (o *Orchestrator) Wake() bool {
-	o.mu.Lock()
-	if o.transitioning {
-		o.mu.Unlock()
-		return false
-	}
-	o.transitioning = true
-	o.direction = "waking"
-	o.mu.Unlock()
-
-	go o.doWake()
-	return true
-}
-
-// Sleep stops all instances tier by tier (4→1).
-func (o *Orchestrator) Sleep() bool {
-	o.mu.Lock()
-	if o.transitioning {
-		o.mu.Unlock()
-		return false
-	}
-	o.transitioning = true
-	o.direction = "sleeping"
-	o.mu.Unlock()
-
-	go o.doSleep()
-	return true
-}
-
 // WakeTier starts all instances in a single tier.
 // Returns false if a transition is already in progress, or if the tier
 // has no instances (unknown tier).
@@ -600,83 +570,6 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 	log.Printf("tier %d sleep complete", tier)
 }
 
-func (o *Orchestrator) doWake() {
-	defer func() {
-		o.mu.Lock()
-		o.transitioning = false
-		o.direction = ""
-		o.currentTier = 0
-		o.mu.Unlock()
-	}()
-
-	tiers := o.tiers()
-	for _, tier := range tiers {
-		o.mu.Lock()
-		o.currentTier = tier
-		o.mu.Unlock()
-
-		instances := o.filterTouchable(o.instancesByTier(tier))
-		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
-
-		// Fire all start commands in this tier
-		for _, inst := range instances {
-			if err := o.client.Start(inst); err != nil {
-				log.Printf("error starting %s (%d): %v", inst.Name, inst.VMID, err)
-			}
-		}
-
-		// Wait for all to reach "running"
-		o.waitForState(instances, "running")
-
-		// Stabilization delay — let services inside VMs actually start
-		// before proceeding to dependent tiers
-		if tier != tiers[len(tiers)-1] {
-			time.Sleep(o.wakeTierDelay)
-		}
-	}
-
-	log.Println("wake complete")
-}
-
-func (o *Orchestrator) doSleep() {
-	defer func() {
-		o.mu.Lock()
-		o.transitioning = false
-		o.direction = ""
-		o.currentTier = 0
-		o.mu.Unlock()
-	}()
-
-	tiers := o.tiers()
-	// Reverse order for sleep
-	for i := len(tiers) - 1; i >= 0; i-- {
-		tier := tiers[i]
-		o.mu.Lock()
-		o.currentTier = tier
-		o.mu.Unlock()
-
-		instances := o.filterTouchable(o.instancesByTier(tier))
-		log.Printf("sleeping tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
-
-		// Fire all stop commands in this tier
-		for _, inst := range instances {
-			if err := o.client.Stop(inst); err != nil {
-				log.Printf("error stopping %s (%d): %v", inst.Name, inst.VMID, err)
-			}
-		}
-
-		// Wait for all to reach "stopped"
-		o.waitForState(instances, "stopped")
-
-		// Brief delay between tiers
-		if i > 0 {
-			time.Sleep(o.sleepTierDelay)
-		}
-	}
-
-	log.Println("sleep complete")
-}
-
 func (o *Orchestrator) waitForState(instances []Instance, target string) {
 	timeout := 120 * time.Second
 	poll := 3 * time.Second
@@ -713,44 +606,6 @@ func (o *Orchestrator) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := o.Status()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-// HandleWake handles POST /api/wake.
-func (o *Orchestrator) HandleWake(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if !o.Wake() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{"error": "transition already in progress"})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-}
-
-// HandleSleep handles POST /api/sleep.
-func (o *Orchestrator) HandleSleep(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if !o.Sleep() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{"error": "transition already in progress"})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
 // HandleTierAction handles POST /api/tier/{tier}/wake and /sleep.

@@ -221,8 +221,8 @@ func TestRefreshSkippedDuringTransition(t *testing.T) {
 	instances, tierNames, _ := DiscoverInstances(mock, tierDefs)
 	orch := NewOrchestrator(instances, tierNames, tierDefs, nil, nil, mock)
 
-	if !orch.Wake() {
-		t.Fatal("Wake() returned false")
+	if started, _ := orch.SleepTier(1); !started {
+		t.Fatal("SleepTier(1) returned false")
 	}
 
 	// Swap underlying Proxmox state — Refresh must NOT pick this up while
@@ -254,83 +254,6 @@ func TestHandleStatusMethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/status", nil)
 	w := httptest.NewRecorder()
 	orch.HandleStatus(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status code = %d, want 405", w.Code)
-	}
-}
-
-func TestHandleWake(t *testing.T) {
-	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
-	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
-
-	req := httptest.NewRequest("POST", "/api/wake", nil)
-	w := httptest.NewRecorder()
-	orch.HandleWake(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status code = %d, want 202", w.Code)
-	}
-
-	var resp map[string]string
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "started" {
-		t.Errorf("response status = %q, want started", resp["status"])
-	}
-
-	// Should be transitioning now
-	if !orch.isTransitioning() {
-		t.Error("expected orchestrator to be transitioning")
-	}
-}
-
-func TestHandleWakeConflict(t *testing.T) {
-	mock := newMockProxmox(map[int]string{100: "stopped", 101: "stopped", 200: "stopped"})
-	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
-
-	// Start first wake
-	req := httptest.NewRequest("POST", "/api/wake", nil)
-	w := httptest.NewRecorder()
-	orch.HandleWake(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("first wake: status code = %d, want 202", w.Code)
-	}
-
-	// Second wake should conflict
-	req = httptest.NewRequest("POST", "/api/wake", nil)
-	w = httptest.NewRecorder()
-	orch.HandleWake(w, req)
-
-	if w.Code != http.StatusConflict {
-		t.Errorf("second wake: status code = %d, want 409", w.Code)
-	}
-}
-
-func TestHandleSleep(t *testing.T) {
-	mock := newMockProxmox(map[int]string{100: "running", 101: "running", 200: "running"})
-	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
-
-	req := httptest.NewRequest("POST", "/api/sleep", nil)
-	w := httptest.NewRecorder()
-	orch.HandleSleep(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status code = %d, want 202", w.Code)
-	}
-}
-
-func TestHandleWakeMethodNotAllowed(t *testing.T) {
-	mock := newMockProxmox(map[int]string{})
-	instances, tierNames := testInstances()
-	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
-
-	req := httptest.NewRequest("GET", "/api/wake", nil)
-	w := httptest.NewRecorder()
-	orch.HandleWake(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status code = %d, want 405", w.Code)
@@ -399,8 +322,8 @@ func TestHandleInstanceConflictDuringTransition(t *testing.T) {
 	instances, tierNames := testInstances()
 	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
 
-	// Start a full wake first
-	orch.Wake()
+	// Start a tier transition to put the orchestrator into transitioning state
+	orch.WakeTier(1)
 
 	req := httptest.NewRequest("POST", "/api/instance/100/start", nil)
 	w := httptest.NewRecorder()
@@ -515,8 +438,8 @@ func TestHandleTierConflictDuringMasterTransition(t *testing.T) {
 	instances, tierNames := testInstances()
 	orch := NewOrchestrator(instances, tierNames, nil, nil, nil, mock)
 
-	// Start a full wake first
-	orch.Wake()
+	// Start a tier transition to put the orchestrator into transitioning state
+	orch.WakeTier(2)
 
 	req := httptest.NewRequest("POST", "/api/tier/1/wake", nil)
 	w := httptest.NewRecorder()
@@ -760,7 +683,7 @@ func TestComputeStateNight(t *testing.T) {
 
 // --- never_touch ---
 
-func TestNeverTouchExcludedFromSleep(t *testing.T) {
+func TestNeverTouchExcludedFromTierSleep(t *testing.T) {
 	mock := newMockProxmox(map[int]string{100: "running", 200: "running"})
 	instances := []Instance{
 		{VMID: 100, Name: "dns", Type: "qemu", Tier: 1, Tags: []string{"dns", "infra"}},
@@ -770,8 +693,8 @@ func TestNeverTouchExcludedFromSleep(t *testing.T) {
 	orch.wakeTierDelay = 0
 	orch.sleepTierDelay = 0
 
-	if !orch.Sleep() {
-		t.Fatal("Sleep returned false")
+	if started, _ := orch.SleepTier(1); !started {
+		t.Fatal("SleepTier(1) returned false")
 	}
 	for i := 0; i < 100; i++ {
 		if !orch.isTransitioning() {
@@ -785,7 +708,7 @@ func TestNeverTouchExcludedFromSleep(t *testing.T) {
 	mock.mu.Unlock()
 	for _, id := range stopped {
 		if id == 100 {
-			t.Error("never_touch instance 100 was stopped by Sleep()")
+			t.Error("never_touch instance 100 was stopped by SleepTier")
 		}
 	}
 	if len(stopped) != 1 || stopped[0] != 200 {

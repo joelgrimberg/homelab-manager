@@ -10,14 +10,10 @@ import (
 type fakeOrch struct {
 	nightSleeps int32
 	nightWakes  int32
-	wakes       int32
-	sleeps      int32
 }
 
 func (f *fakeOrch) NightSleep() (bool, bool) { atomic.AddInt32(&f.nightSleeps, 1); return true, false }
 func (f *fakeOrch) NightWake() (bool, bool)  { atomic.AddInt32(&f.nightWakes, 1); return true, false }
-func (f *fakeOrch) Wake() bool               { atomic.AddInt32(&f.wakes, 1); return true }
-func (f *fakeOrch) Sleep() bool              { atomic.AddInt32(&f.sleeps, 1); return true }
 
 type fakeNotifier struct {
 	mu       sync.Mutex
@@ -53,8 +49,6 @@ func TestSchedulerActionsAndNotify(t *testing.T) {
 		{ScheduleEntry{Name: "warn", Cron: "0 21 * * *", Notify: "5 min"}, nil, "5 min"},
 		{ScheduleEntry{Name: "ns", Cron: "5 21 * * *", Action: "night_sleep"}, &orch.nightSleeps, ""},
 		{ScheduleEntry{Name: "nw", Cron: "0 7 * * *", Action: "night_wake"}, &orch.nightWakes, ""},
-		{ScheduleEntry{Name: "w", Cron: "0 8 * * *", Action: "wake"}, &orch.wakes, ""},
-		{ScheduleEntry{Name: "sl", Cron: "0 23 * * *", Action: "sleep"}, &orch.sleeps, ""},
 	}
 
 	for _, tc := range cases {
