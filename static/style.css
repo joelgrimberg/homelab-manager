@@ -388,6 +388,10 @@ h1 {
   background: var(--red);
   animation: pulse 1s ease-in-out infinite;
 }
+.status-dot.stuck {
+  background: var(--orange);
+  animation: pulse 1.5s ease-in-out infinite;
+}
 
 .instance-name {
   font-size: 15px;
@@ -402,6 +406,16 @@ h1 {
   font-size: 12px;
   margin-right: 8px;
   opacity: 0.7;
+}
+
+.instance.stuck .instance-name {
+  color: var(--orange);
+}
+
+.instance-warn {
+  font-size: 12px;
+  margin-right: 8px;
+  color: var(--orange);
 }
 
 .instance-meta {

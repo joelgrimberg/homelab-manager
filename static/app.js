@@ -224,11 +224,16 @@
           }
         }
 
-        html += '<div class="instance' + (inst.protected ? " protected" : "") + '">';
+        if (inst.stuck) dotClass = "stuck";
+
+        html += '<div class="instance' + (inst.protected ? " protected" : "") + (inst.stuck ? " stuck" : "") + '">';
         html += '<span class="status-dot ' + dotClass + '"></span>';
         html += '<span class="instance-name">' + escapeHtml(inst.name) + "</span>";
         if (inst.protected) {
           html += '<span class="instance-lock" title="Protected — never auto-stopped">&#128274;</span>';
+        }
+        if (inst.stuck) {
+          html += '<span class="instance-warn" title="Did not reach target during last transition">&#9888;</span>';
         }
         html += '<span class="instance-meta">' + inst.type + "</span>";
 

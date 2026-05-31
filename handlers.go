@@ -20,6 +20,7 @@ type InstanceStatus struct {
 	Type      string `json:"type"`
 	Status    string `json:"status"`
 	Protected bool   `json:"protected,omitempty"` // never_touch — UI shows lock, refuses stop
+	Stuck     bool   `json:"stuck,omitempty"`     // didn't reach target during last transition
 }
 
 // TierStatus is the JSON representation of a tier group.
@@ -61,6 +62,14 @@ type Orchestrator struct {
 	// Inter-tier stabilization delays. Overridable for tests.
 	wakeTierDelay  time.Duration
 	sleepTierDelay time.Duration
+	waitTimeout    time.Duration // per-tier waitForState ceiling (default 240s)
+	verifyTimeout  time.Duration // ceiling for verifySubset retry (default 60s)
+	pollInterval   time.Duration // status-poll interval inside waitForState (default 3s)
+
+	// stuck holds VMIDs that didn't reach the requested target during the
+	// most recent transition (after a retry pass). Replaced wholesale at
+	// the start of each transition.
+	stuck atomic.Pointer[map[int]bool]
 
 	mu            sync.Mutex
 	transitioning bool
@@ -85,8 +94,13 @@ func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []
 		client:         client,
 		wakeTierDelay:  10 * time.Second,
 		sleepTierDelay: 5 * time.Second,
+		waitTimeout:    240 * time.Second,
+		verifyTimeout:  60 * time.Second,
+		pollInterval:   3 * time.Second,
 	}
 	o.state.Store(&discoveryState{instances: instances, tierNames: tierNames})
+	empty := map[int]bool{}
+	o.stuck.Store(&empty)
 	return o
 }
 
@@ -257,6 +271,8 @@ func (o *Orchestrator) Status() StatusResponse {
 	tiers := o.tiers()
 	tierStatuses := make([]TierStatus, 0, len(tiers))
 
+	stuckSet := *o.stuck.Load()
+
 	for _, tier := range tiers {
 		instances := o.instancesByTier(tier)
 		statuses := make([]InstanceStatus, 0, len(instances))
@@ -273,6 +289,7 @@ func (o *Orchestrator) Status() StatusResponse {
 				Type:      inst.Type,
 				Status:    status,
 				Protected: o.isNeverTouch(inst),
+				Stuck:     stuckSet[inst.VMID],
 			})
 		}
 
@@ -450,6 +467,7 @@ func (o *Orchestrator) NightWake() (started bool, unconfigured bool) {
 
 func (o *Orchestrator) doNightSleep() {
 	defer o.endTransition()
+	o.clearStuck()
 
 	exempt, nonExempt := o.partitionByExemption()
 
@@ -457,14 +475,20 @@ func (o *Orchestrator) doNightSleep() {
 	o.processSubset(exempt, "start")
 	o.processSubset(nonExempt, "stop")
 
+	o.recordStuck(o.verifySubset(exempt, "running"))
+	o.recordStuck(o.verifySubset(nonExempt, "stopped"))
+
 	log.Println("night sleep complete")
 }
 
 func (o *Orchestrator) doNightWake() {
 	defer o.endTransition()
+	o.clearStuck()
 
 	_, nonExempt := o.partitionByExemption()
 	o.processSubset(nonExempt, "start")
+
+	o.recordStuck(o.verifySubset(nonExempt, "running"))
 
 	log.Println("night wake complete")
 }
@@ -545,34 +569,40 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 		o.currentTier = 0
 		o.mu.Unlock()
 	}()
+	o.clearStuck()
 
 	instances = o.filterTouchable(instances)
 
-	if action == "start" {
-		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
-		for _, inst := range instances {
-			if err := o.client.Start(inst); err != nil {
-				log.Printf("error starting %s (%d): %v", inst.Name, inst.VMID, err)
-			}
-		}
-		o.waitForState(instances, "running")
-		log.Printf("tier %d wake complete", tier)
-		return
+	target := "running"
+	verb := "waking"
+	if action == "stop" {
+		target = "stopped"
+		verb = "sleeping"
 	}
 
-	log.Printf("sleeping tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
+	log.Printf("%s tier %d (%s): %d instances", verb, tier, o.state.Load().tierNames[tier], len(instances))
 	for _, inst := range instances {
-		if err := o.client.Stop(inst); err != nil {
-			log.Printf("error stopping %s (%d): %v", inst.Name, inst.VMID, err)
+		var err error
+		if action == "start" {
+			err = o.client.Start(inst)
+		} else {
+			err = o.client.Stop(inst)
+		}
+		if err != nil {
+			log.Printf("error %s %s (%d): %v", verb, inst.Name, inst.VMID, err)
 		}
 	}
-	o.waitForState(instances, "stopped")
-	log.Printf("tier %d sleep complete", tier)
+	o.waitForState(instances, target)
+	o.recordStuck(o.verifySubset(instances, target))
+	log.Printf("tier %d %s complete", tier, action)
 }
 
 func (o *Orchestrator) waitForState(instances []Instance, target string) {
-	timeout := 120 * time.Second
-	poll := 3 * time.Second
+	o.waitForStateWithTimeout(instances, target, o.waitTimeout)
+}
+
+func (o *Orchestrator) waitForStateWithTimeout(instances []Instance, target string, timeout time.Duration) {
+	poll := o.pollInterval
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -594,6 +624,81 @@ func (o *Orchestrator) waitForState(instances []Instance, target string) {
 	}
 
 	log.Printf("timeout waiting for instances to reach %q", target)
+}
+
+// verifySubset re-issues the start/stop action for any instance whose
+// current Proxmox state doesn't match target, then waits up to
+// verifyTimeout for them to settle. Returns the VMIDs still not at target.
+func (o *Orchestrator) verifySubset(instances []Instance, target string) []int {
+	if len(instances) == 0 {
+		return nil
+	}
+	var laggards []Instance
+	for _, inst := range instances {
+		status, err := o.client.GetStatus(inst)
+		if err != nil {
+			log.Printf("verify: error getting status for %s (%d): %v", inst.Name, inst.VMID, err)
+			laggards = append(laggards, inst)
+			continue
+		}
+		if status != target {
+			laggards = append(laggards, inst)
+		}
+	}
+	if len(laggards) == 0 {
+		return nil
+	}
+
+	verb := "starting"
+	if target == "stopped" {
+		verb = "stopping"
+	}
+	for _, inst := range laggards {
+		log.Printf("verify: re-%s %s (%d)", verb, inst.Name, inst.VMID)
+		var err error
+		if target == "running" {
+			err = o.client.Start(inst)
+		} else {
+			err = o.client.Stop(inst)
+		}
+		if err != nil {
+			log.Printf("verify: error %s %s (%d): %v", verb, inst.Name, inst.VMID, err)
+		}
+	}
+
+	o.waitForStateWithTimeout(laggards, target, o.verifyTimeout)
+
+	var stuck []int
+	for _, inst := range laggards {
+		status, err := o.client.GetStatus(inst)
+		if err != nil || status != target {
+			stuck = append(stuck, inst.VMID)
+			log.Printf("verify: %s (%d) still not %s", inst.Name, inst.VMID, target)
+		}
+	}
+	return stuck
+}
+
+// clearStuck resets the stuck map at the start of a transition.
+func (o *Orchestrator) clearStuck() {
+	empty := map[int]bool{}
+	o.stuck.Store(&empty)
+}
+
+// recordStuck stores the union of given stuck VMIDs.
+func (o *Orchestrator) recordStuck(vmids []int) {
+	if len(vmids) == 0 {
+		return
+	}
+	cur := *o.stuck.Load()
+	next := make(map[int]bool, len(cur)+len(vmids))
+	for k, v := range cur {
+		next[k] = v
+	}
+	for _, id := range vmids {
+		next[id] = true
+	}
+	o.stuck.Store(&next)
 }
 
 // HandleStatus handles GET /api/status.

@@ -11,12 +11,14 @@ import (
 
 // mockProxmox implements ProxmoxAPI for testing.
 type mockProxmox struct {
-	mu       sync.Mutex
-	statuses map[int]string // vmid -> status
-	started  []int
-	stopped  []int
-	vms      []ProxmoxInstance
-	lxcs     []ProxmoxInstance
+	mu        sync.Mutex
+	statuses  map[int]string // vmid -> status
+	started   []int
+	stopped   []int
+	vms       []ProxmoxInstance
+	lxcs      []ProxmoxInstance
+	startHook func(Instance) // optional: scripts state changes per call
+	stopHook  func(Instance)
 }
 
 func newMockProxmox(statuses map[int]string) *mockProxmox {
@@ -37,7 +39,11 @@ func (m *mockProxmox) Start(inst Instance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.started = append(m.started, inst.VMID)
-	m.statuses[inst.VMID] = "running"
+	if m.startHook != nil {
+		m.startHook(inst)
+	} else {
+		m.statuses[inst.VMID] = "running"
+	}
 	return nil
 }
 
@@ -45,7 +51,11 @@ func (m *mockProxmox) Stop(inst Instance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopped = append(m.stopped, inst.VMID)
-	m.statuses[inst.VMID] = "stopped"
+	if m.stopHook != nil {
+		m.stopHook(inst)
+	} else {
+		m.statuses[inst.VMID] = "stopped"
+	}
 	return nil
 }
 
@@ -678,6 +688,133 @@ func TestComputeStateNight(t *testing.T) {
 	got := computeState(tiers, false, exempt)
 	if got != "night" {
 		t.Errorf("computeState = %q, want night", got)
+	}
+}
+
+// --- stragglers / verifySubset ---
+
+func TestVerifySubsetRetriesStragglers(t *testing.T) {
+	// VMID 200 starts in "stopped" — simulating a VM that the main
+	// transition pass didn't reach. The Start call (default mock
+	// behavior) will set it to "running", and verifySubset should detect
+	// the laggard, re-issue Start, and find it at target.
+	mock := newMockProxmox(map[int]string{100: "running", 200: "stopped"})
+
+	instances := []Instance{
+		{VMID: 100, Name: "a", Type: "qemu", Tier: 1, Tags: []string{"infra"}},
+		{VMID: 200, Name: "b", Type: "qemu", Tier: 1, Tags: []string{"infra"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra"}, nil, nil, nil, mock)
+	orch.verifyTimeout = 200 * time.Millisecond
+	orch.pollInterval = 20 * time.Millisecond
+
+	stuck := orch.verifySubset(instances, "running")
+	if len(stuck) != 0 {
+		t.Errorf("expected no stuck after retry, got %v", stuck)
+	}
+
+	// Start should have been called for the laggard (200) only — 100 was
+	// already at target so verify skipped it.
+	mock.mu.Lock()
+	started := append([]int(nil), mock.started...)
+	mock.mu.Unlock()
+	saw200 := 0
+	for _, id := range started {
+		if id == 200 {
+			saw200++
+		}
+	}
+	if saw200 < 1 {
+		t.Errorf("verifySubset never re-issued Start for VMID 200; started=%v", started)
+	}
+}
+
+func TestVerifySubsetSurfacesStuck(t *testing.T) {
+	// Mock that never advances VMID 200 to "running" regardless of Start
+	// calls. The verifySubset retry should give up and return 200.
+	mock := newMockProxmox(map[int]string{200: "stopped"})
+	mock.startHook = func(inst Instance) {
+		// no-op — leave it stopped forever
+	}
+
+	instances := []Instance{
+		{VMID: 200, Name: "b", Type: "qemu", Tier: 1, Tags: []string{"infra"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra"}, nil, nil, nil, mock)
+	orch.verifyTimeout = 100 * time.Millisecond
+	orch.pollInterval = 20 * time.Millisecond
+
+	stuck := orch.verifySubset(instances, "running")
+	if len(stuck) != 1 || stuck[0] != 200 {
+		t.Errorf("stuck = %v, want [200]", stuck)
+	}
+
+	orch.recordStuck(stuck)
+	resp := orch.Status()
+	found := false
+	for _, tier := range resp.Tiers {
+		for _, inst := range tier.Instances {
+			if inst.VMID == 200 {
+				found = true
+				if !inst.Stuck {
+					t.Errorf("VMID 200 Status() Stuck=false, want true")
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("VMID 200 missing from Status response")
+	}
+}
+
+func TestNightSleepKicksStragglers(t *testing.T) {
+	// Two non-exempt VMs. The Stop call leaves VMID 200 in "running"
+	// initially; the verify retry kicks it and then it goes to "stopped".
+	mock := newMockProxmox(map[int]string{100: "running", 200: "running"})
+	stopCalls := map[int]int{}
+	mock.stopHook = func(inst Instance) {
+		stopCalls[inst.VMID]++
+		if inst.VMID == 100 {
+			mock.statuses[100] = "stopped"
+		} else if inst.VMID == 200 && stopCalls[200] >= 2 {
+			mock.statuses[200] = "stopped"
+		}
+	}
+
+	instances := []Instance{
+		{VMID: 100, Name: "a", Type: "qemu", Tier: 1, Tags: []string{"infra"}},
+		{VMID: 200, Name: "b", Type: "qemu", Tier: 1, Tags: []string{"infra"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra"}, nil, []string{"dns"}, nil, mock)
+	orch.wakeTierDelay = 0
+	orch.sleepTierDelay = 0
+	orch.waitTimeout = 100 * time.Millisecond
+	orch.verifyTimeout = 200 * time.Millisecond
+	orch.pollInterval = 20 * time.Millisecond
+
+	if _, unconf := orch.NightSleep(); unconf {
+		t.Fatal("unexpected unconfigured")
+	}
+	// Wait for transition to complete
+	for i := 0; i < 500; i++ {
+		if !orch.isTransitioning() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if orch.isTransitioning() {
+		t.Fatal("still transitioning after 10s")
+	}
+
+	if mock.statuses[200] != "stopped" {
+		t.Errorf("VMID 200 = %q, want stopped (verify retry should have kicked it)", mock.statuses[200])
+	}
+	if stopCalls[200] < 2 {
+		t.Errorf("Stop on VMID 200 called %d times, want at least 2", stopCalls[200])
+	}
+	stuck := *orch.stuck.Load()
+	if stuck[200] {
+		t.Error("VMID 200 should not be in stuck set after successful retry")
 	}
 }
 
