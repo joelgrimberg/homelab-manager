@@ -15,10 +15,11 @@ import (
 
 // InstanceStatus is the JSON representation of a single instance.
 type InstanceStatus struct {
-	VMID   int    `json:"vmid"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Status string `json:"status"`
+	VMID      int    `json:"vmid"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Protected bool   `json:"protected,omitempty"` // never_touch — UI shows lock, refuses stop
 }
 
 // TierStatus is the JSON representation of a tier group.
@@ -30,11 +31,14 @@ type TierStatus struct {
 
 // StatusResponse is the JSON response for GET /api/status.
 type StatusResponse struct {
-	State         string       `json:"state"`
-	Transitioning bool         `json:"transitioning"`
-	Direction     string       `json:"direction,omitempty"`
-	CurrentTier   int          `json:"current_tier,omitempty"`
-	Tiers         []TierStatus `json:"tiers"`
+	State            string               `json:"state"`
+	Transitioning    bool                 `json:"transitioning"`
+	Direction        string               `json:"direction,omitempty"`
+	CurrentTier      int                  `json:"current_tier,omitempty"`
+	NightModeEnabled bool                 `json:"night_mode_enabled"`
+	Tiers            []TierStatus         `json:"tiers"`
+	Snoozes          map[string]Snooze    `json:"snoozes,omitempty"`
+	NextFires        map[string]time.Time `json:"next_fires,omitempty"`
 }
 
 // discoveryState is the snapshot of discovered instances and tier names.
@@ -48,13 +52,19 @@ type discoveryState struct {
 
 // Orchestrator manages wake/sleep operations and tracks state.
 type Orchestrator struct {
-	state    atomic.Pointer[discoveryState]
-	tierDefs []TierConfig
-	client   ProxmoxAPI
+	state          atomic.Pointer[discoveryState]
+	tierDefs       []TierConfig
+	keepAwakeTags  []string // night-mode exempt tags (empty = unconfigured)
+	neverTouchTags []string // never_touch — these are never started or stopped
+	client         ProxmoxAPI
+
+	// Inter-tier stabilization delays. Overridable for tests.
+	wakeTierDelay  time.Duration
+	sleepTierDelay time.Duration
 
 	mu            sync.Mutex
 	transitioning bool
-	direction     string // "waking" or "sleeping"
+	direction     string // "waking", "sleeping", "night-waking", or "night-sleeping"
 	currentTier   int    // tier currently being processed
 }
 
@@ -67,13 +77,49 @@ type ProxmoxAPI interface {
 	ListLXCs() ([]ProxmoxInstance, error)
 }
 
-func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []TierConfig, client ProxmoxAPI) *Orchestrator {
+func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []TierConfig, keepAwakeTags []string, neverTouchTags []string, client ProxmoxAPI) *Orchestrator {
 	o := &Orchestrator{
-		tierDefs: tierDefs,
-		client:   client,
+		tierDefs:       tierDefs,
+		keepAwakeTags:  keepAwakeTags,
+		neverTouchTags: neverTouchTags,
+		client:         client,
+		wakeTierDelay:  10 * time.Second,
+		sleepTierDelay: 5 * time.Second,
 	}
 	o.state.Store(&discoveryState{instances: instances, tierNames: tierNames})
 	return o
+}
+
+// isNeverTouch reports whether the instance carries a never_touch tag.
+// Such instances are excluded from every start and stop the orchestrator issues.
+func (o *Orchestrator) isNeverTouch(inst Instance) bool {
+	if len(o.neverTouchTags) == 0 {
+		return false
+	}
+	set := make(map[string]bool, len(o.neverTouchTags))
+	for _, t := range o.neverTouchTags {
+		set[t] = true
+	}
+	for _, tag := range inst.Tags {
+		if set[tag] {
+			return true
+		}
+	}
+	return false
+}
+
+// filterTouchable drops never_touch instances from a slice.
+func (o *Orchestrator) filterTouchable(instances []Instance) []Instance {
+	if len(o.neverTouchTags) == 0 {
+		return instances
+	}
+	out := make([]Instance, 0, len(instances))
+	for _, inst := range instances {
+		if !o.isNeverTouch(inst) {
+			out = append(out, inst)
+		}
+	}
+	return out
 }
 
 // Refresh re-discovers instances from Proxmox and atomically swaps in the
@@ -157,13 +203,19 @@ func (o *Orchestrator) instancesByTier(tier int) []Instance {
 }
 
 // computeState determines the overall homelab state from instance statuses.
-func computeState(tiers []TierStatus, transitioning bool) string {
+// exemptVMIDs marks instances exempt from night-mode sleep — if every
+// non-exempt instance is stopped while exempt ones are running, state is "night".
+func computeState(tiers []TierStatus, transitioning bool, exemptVMIDs map[int]bool) string {
 	if transitioning {
 		return "transitioning"
 	}
 
 	allRunning := true
 	allStopped := true
+	nonExemptAllStopped := true
+	exemptAnyRunning := false
+	haveNonExempt := false
+	haveExempt := false
 
 	for _, tier := range tiers {
 		for _, inst := range tier.Instances {
@@ -173,6 +225,17 @@ func computeState(tiers []TierStatus, transitioning bool) string {
 			if inst.Status != "stopped" {
 				allStopped = false
 			}
+			if exemptVMIDs[inst.VMID] {
+				haveExempt = true
+				if inst.Status == "running" {
+					exemptAnyRunning = true
+				}
+			} else {
+				haveNonExempt = true
+				if inst.Status != "stopped" {
+					nonExemptAllStopped = false
+				}
+			}
 		}
 	}
 
@@ -181,6 +244,9 @@ func computeState(tiers []TierStatus, transitioning bool) string {
 	}
 	if allStopped {
 		return "asleep"
+	}
+	if haveExempt && haveNonExempt && nonExemptAllStopped && exemptAnyRunning {
+		return "night"
 	}
 	return "mixed"
 }
@@ -202,10 +268,11 @@ func (o *Orchestrator) Status() StatusResponse {
 				status = "unknown"
 			}
 			statuses = append(statuses, InstanceStatus{
-				VMID:   inst.VMID,
-				Name:   inst.Name,
-				Type:   inst.Type,
-				Status: status,
+				VMID:      inst.VMID,
+				Name:      inst.Name,
+				Type:      inst.Type,
+				Status:    status,
+				Protected: o.isNeverTouch(inst),
 			})
 		}
 
@@ -227,13 +294,39 @@ func (o *Orchestrator) Status() StatusResponse {
 	currentTier := o.currentTier
 	o.mu.Unlock()
 
+	exemptVMIDs := o.exemptVMIDs()
+
 	return StatusResponse{
-		State:         computeState(tierStatuses, transitioning),
-		Transitioning: transitioning,
-		Direction:     direction,
-		CurrentTier:   currentTier,
-		Tiers:         tierStatuses,
+		State:            computeState(tierStatuses, transitioning, exemptVMIDs),
+		Transitioning:    transitioning,
+		Direction:        direction,
+		CurrentTier:      currentTier,
+		NightModeEnabled: len(o.keepAwakeTags) > 0,
+		Tiers:            tierStatuses,
 	}
+}
+
+// exemptVMIDs returns the set of VMIDs that are exempt from night-mode sleep.
+// Returns nil if night mode is unconfigured.
+func (o *Orchestrator) exemptVMIDs() map[int]bool {
+	if len(o.keepAwakeTags) == 0 {
+		return nil
+	}
+	keep := make(map[string]bool, len(o.keepAwakeTags))
+	for _, t := range o.keepAwakeTags {
+		keep[t] = true
+	}
+	s := o.state.Load()
+	result := map[int]bool{}
+	for _, inst := range s.instances {
+		for _, tag := range inst.Tags {
+			if keep[tag] {
+				result[inst.VMID] = true
+				break
+			}
+		}
+	}
+	return result
 }
 
 // Wake starts all instances tier by tier (1→4).
@@ -310,7 +403,170 @@ func (o *Orchestrator) SleepTier(tier int) (started bool, unknown bool) {
 	return true, false
 }
 
+// partitionByExemption splits the discovered instances into (exempt, nonExempt)
+// where exempt instances carry at least one keep-awake tag. never_touch
+// instances are excluded from BOTH lists (we never start or stop them).
+// Returns (nil, nil) if night mode is unconfigured.
+func (o *Orchestrator) partitionByExemption() (exempt, nonExempt []Instance) {
+	if len(o.keepAwakeTags) == 0 {
+		return nil, nil
+	}
+	keep := make(map[string]bool, len(o.keepAwakeTags))
+	for _, t := range o.keepAwakeTags {
+		keep[t] = true
+	}
+	s := o.state.Load()
+	for _, inst := range s.instances {
+		if o.isNeverTouch(inst) {
+			continue
+		}
+		isExempt := false
+		for _, tag := range inst.Tags {
+			if keep[tag] {
+				isExempt = true
+				break
+			}
+		}
+		if isExempt {
+			exempt = append(exempt, inst)
+		} else {
+			nonExempt = append(nonExempt, inst)
+		}
+	}
+	return exempt, nonExempt
+}
+
+// NightSleep brings the homelab into night state: ensures every keep-awake
+// instance is running, then stops the rest. Idempotent regardless of starting
+// state (works whether we came from awake, asleep, or mixed).
+func (o *Orchestrator) NightSleep() (started bool, unconfigured bool) {
+	if len(o.keepAwakeTags) == 0 {
+		return false, true
+	}
+
+	o.mu.Lock()
+	if o.transitioning {
+		o.mu.Unlock()
+		return false, false
+	}
+	o.transitioning = true
+	o.direction = "night-sleeping"
+	o.mu.Unlock()
+
+	go o.doNightSleep()
+	return true, false
+}
+
+// NightWake exits night state by starting the non-exempt instances. Exempt
+// instances are already up; calling Wake() instead would also work but does
+// extra no-op starts.
+func (o *Orchestrator) NightWake() (started bool, unconfigured bool) {
+	if len(o.keepAwakeTags) == 0 {
+		return false, true
+	}
+
+	o.mu.Lock()
+	if o.transitioning {
+		o.mu.Unlock()
+		return false, false
+	}
+	o.transitioning = true
+	o.direction = "night-waking"
+	o.mu.Unlock()
+
+	go o.doNightWake()
+	return true, false
+}
+
+func (o *Orchestrator) doNightSleep() {
+	defer o.endTransition()
+
+	exempt, nonExempt := o.partitionByExemption()
+
+	// Bring exempt up first so dns stays resolvable while we shut the rest down.
+	o.processSubset(exempt, "start")
+	o.processSubset(nonExempt, "stop")
+
+	log.Println("night sleep complete")
+}
+
+func (o *Orchestrator) doNightWake() {
+	defer o.endTransition()
+
+	_, nonExempt := o.partitionByExemption()
+	o.processSubset(nonExempt, "start")
+
+	log.Println("night wake complete")
+}
+
+func (o *Orchestrator) endTransition() {
+	o.mu.Lock()
+	o.transitioning = false
+	o.direction = ""
+	o.currentTier = 0
+	o.mu.Unlock()
+}
+
+// processSubset runs start or stop on a subset of instances, grouped by tier
+// and processed in dependency order (ascending for start, descending for stop).
+// Does NOT manage the transitioning flag — caller does that. No-op on empty.
+func (o *Orchestrator) processSubset(instances []Instance, action string) {
+	if len(instances) == 0 {
+		return
+	}
+
+	byTier := map[int][]Instance{}
+	for _, inst := range instances {
+		byTier[inst.Tier] = append(byTier[inst.Tier], inst)
+	}
+	tiers := make([]int, 0, len(byTier))
+	for t := range byTier {
+		tiers = append(tiers, t)
+	}
+	sort.Ints(tiers)
+	if action == "stop" {
+		for i, j := 0, len(tiers)-1; i < j; i, j = i+1, j-1 {
+			tiers[i], tiers[j] = tiers[j], tiers[i]
+		}
+	}
+
+	target := "running"
+	delay := o.wakeTierDelay
+	if action == "stop" {
+		target = "stopped"
+		delay = o.sleepTierDelay
+	}
+
+	for i, tier := range tiers {
+		o.mu.Lock()
+		o.currentTier = tier
+		o.mu.Unlock()
+
+		tierInsts := byTier[tier]
+		log.Printf("night %s tier %d: %d instances", action, tier, len(tierInsts))
+
+		for _, inst := range tierInsts {
+			var err error
+			if action == "start" {
+				err = o.client.Start(inst)
+			} else {
+				err = o.client.Stop(inst)
+			}
+			if err != nil {
+				log.Printf("error %sing %s (%d): %v", action, inst.Name, inst.VMID, err)
+			}
+		}
+
+		o.waitForState(tierInsts, target)
+
+		if i < len(tiers)-1 {
+			time.Sleep(delay)
+		}
+	}
+}
+
 // doTierTransition runs a single-tier start or stop in the background.
+// never_touch instances in the tier are skipped.
 func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action string) {
 	defer func() {
 		o.mu.Lock()
@@ -319,6 +575,8 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 		o.currentTier = 0
 		o.mu.Unlock()
 	}()
+
+	instances = o.filterTouchable(instances)
 
 	if action == "start" {
 		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
@@ -357,7 +615,7 @@ func (o *Orchestrator) doWake() {
 		o.currentTier = tier
 		o.mu.Unlock()
 
-		instances := o.instancesByTier(tier)
+		instances := o.filterTouchable(o.instancesByTier(tier))
 		log.Printf("waking tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 
 		// Fire all start commands in this tier
@@ -373,7 +631,7 @@ func (o *Orchestrator) doWake() {
 		// Stabilization delay — let services inside VMs actually start
 		// before proceeding to dependent tiers
 		if tier != tiers[len(tiers)-1] {
-			time.Sleep(10 * time.Second)
+			time.Sleep(o.wakeTierDelay)
 		}
 	}
 
@@ -397,7 +655,7 @@ func (o *Orchestrator) doSleep() {
 		o.currentTier = tier
 		o.mu.Unlock()
 
-		instances := o.instancesByTier(tier)
+		instances := o.filterTouchable(o.instancesByTier(tier))
 		log.Printf("sleeping tier %d (%s): %d instances", tier, o.state.Load().tierNames[tier], len(instances))
 
 		// Fire all stop commands in this tier
@@ -412,7 +670,7 @@ func (o *Orchestrator) doSleep() {
 
 		// Brief delay between tiers
 		if i > 0 {
-			time.Sleep(5 * time.Second)
+			time.Sleep(o.sleepTierDelay)
 		}
 	}
 
@@ -544,6 +802,41 @@ func (o *Orchestrator) HandleTierAction(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
+// HandleNightAction handles POST /api/night/wake and /api/night/sleep.
+func (o *Orchestrator) HandleNightAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	action := strings.TrimPrefix(r.URL.Path, "/api/night/")
+	if action != "wake" && action != "sleep" {
+		http.Error(w, "action must be 'wake' or 'sleep'", http.StatusBadRequest)
+		return
+	}
+
+	var started, unconfigured bool
+	if action == "wake" {
+		started, unconfigured = o.NightWake()
+	} else {
+		started, unconfigured = o.NightSleep()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if unconfigured {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "night mode is not configured"})
+		return
+	}
+	if !started {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "transition already in progress"})
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+}
+
 // HandleInstanceAction handles POST /api/instance/{vmid}/start and /stop.
 func (o *Orchestrator) HandleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -576,6 +869,13 @@ func (o *Orchestrator) HandleInstanceAction(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "instance not found"})
+		return
+	}
+
+	if o.isNeverTouch(*inst) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "instance is protected (never_touch) — refusing"})
 		return
 	}
 

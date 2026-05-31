@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -23,6 +25,8 @@ Commands:
   status                           Show current homelab status
   wake                             Wake up the entire homelab
   sleep                            Put the entire homelab to sleep
+  night wake                       Wake everything that night-mode put to sleep
+  night sleep                      Sleep everything except night-mode keep-awake tags
   tier wake <tier>                 Wake a single tier
   tier sleep <tier>                Sleep a single tier
   instance start <vmid>            Start a single instance
@@ -49,6 +53,8 @@ func main() {
 		cmdTier(os.Args[2:])
 	case "instance":
 		cmdInstance(os.Args[2:])
+	case "night":
+		cmdNight(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Println(usage)
 	default:
@@ -61,6 +67,7 @@ func cmdServe(args []string) {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := flags.String("config", "config.yaml", "path to config file")
 	addr := flags.String("addr", ":8080", "listen address")
+	stateDir := flags.String("state-dir", "/var/lib/homelab-manager", "directory for persistent state (subscriptions.json)")
 	flags.Parse(args)
 
 	cfg, err := LoadConfig(*configPath)
@@ -76,8 +83,26 @@ func cmdServe(args []string) {
 	}
 	log.Printf("discovered %d instances across %d tiers", len(instances), len(tierNames))
 
-	orch := NewOrchestrator(instances, tierNames, cfg.TierDefs, client)
+	orch := NewOrchestrator(instances, tierNames, cfg.TierDefs, cfg.NightMode.KeepAwakeTags, cfg.NeverTouchTags, client)
 	go orch.RunRefreshLoop(context.Background(), 60*time.Second)
+
+	pm, err := NewPushManager(filepath.Join(*stateDir, "subscriptions.json"), cfg.WebPush)
+	if err != nil {
+		log.Fatalf("failed to init push manager: %v", err)
+	}
+	log.Printf("push: loaded %d subscriptions", pm.Count())
+
+	snooze, err := NewSnoozeManager(filepath.Join(*stateDir, "snooze.json"))
+	if err != nil {
+		log.Fatalf("failed to init snooze manager: %v", err)
+	}
+
+	sched := NewScheduler(orch, pm, snooze)
+	if err := sched.Start(cfg.Schedule); err != nil {
+		log.Fatalf("scheduler start: %v", err)
+	}
+	schedHandler := NewScheduleHandler(sched, *configPath)
+	snoozeHandler := NewSnoozeHandler(snooze, sched, orch)
 
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -86,11 +111,32 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
-	mux.HandleFunc("/api/status", orch.HandleStatus)
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		resp := orch.Status()
+		if all := snooze.All(); len(all) > 0 {
+			resp.Snoozes = all
+		}
+		if next := sched.NextFires(); len(next) > 0 {
+			resp.NextFires = next
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
 	mux.HandleFunc("/api/wake", orch.HandleWake)
 	mux.HandleFunc("/api/sleep", orch.HandleSleep)
 	mux.HandleFunc("/api/tier/", orch.HandleTierAction)
 	mux.HandleFunc("/api/instance/", orch.HandleInstanceAction)
+	mux.HandleFunc("/api/night/", orch.HandleNightAction)
+	mux.HandleFunc("/api/push/vapid-key", pm.HandleVAPIDKey)
+	mux.HandleFunc("/api/push/subscribe", pm.HandlePushSubscribe)
+	mux.HandleFunc("/api/push/unsubscribe", pm.HandlePushUnsubscribe)
+	mux.HandleFunc("/api/push/test", pm.HandlePushTest)
+	mux.HandleFunc("/api/schedule", schedHandler.Handle)
+	mux.HandleFunc("/api/snooze", snoozeHandler.Handle)
 
 	log.Printf("listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
@@ -141,6 +187,27 @@ func cmdTier(args []string) {
 	flags.Parse(args[2:])
 
 	if err := runTier(ResolveServer(*server), action, tier); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdNight(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: homelab-manager night <wake|sleep> [-server URL]")
+		os.Exit(1)
+	}
+	action := args[0]
+	if action != "wake" && action != "sleep" {
+		fmt.Fprintf(os.Stderr, "night action must be 'wake' or 'sleep', got %q\n", action)
+		os.Exit(1)
+	}
+
+	flags := flag.NewFlagSet("night", flag.ExitOnError)
+	server := flags.String("server", "", "server URL")
+	flags.Parse(args[1:])
+
+	if err := runNight(ResolveServer(*server), action); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

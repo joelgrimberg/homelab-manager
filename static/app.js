@@ -19,6 +19,42 @@
   const labelSleep = document.getElementById("toggle-label-sleep");
   const labelWake = document.getElementById("toggle-label-wake");
   const advancedInput = document.getElementById("advanced-input");
+  const nightToggleEl = document.getElementById("night-toggle");
+  const nightInput = document.getElementById("night-input");
+  const snoozeCard = document.getElementById("snooze-card");
+  const snoozeLabel = document.getElementById("snooze-label");
+  const snoozeActions = document.getElementById("snooze-actions");
+  const pushCardEl = document.getElementById("push-card");
+  const pushEnableBtn = document.getElementById("push-enable-btn");
+  const pushLabel = document.getElementById("push-label");
+  const pushTestRow = document.getElementById("push-test-row");
+  const pushTestBtn = document.getElementById("push-test-btn");
+  const scheduleBody = document.getElementById("schedule-body");
+  const viewMain = document.getElementById("view-main");
+  const viewSettings = document.getElementById("view-settings");
+  const headerMain = document.getElementById("header-main");
+  const headerSettings = document.getElementById("header-settings");
+  const settingsOpenBtn = document.getElementById("settings-open-btn");
+  const settingsCloseBtn = document.getElementById("settings-close-btn");
+
+  let scheduleEntries = [];
+
+  function showSettings() {
+    headerMain.hidden = true;
+    viewMain.hidden = true;
+    headerSettings.hidden = false;
+    viewSettings.hidden = false;
+    // Lazy-load schedule on first open.
+    if (scheduleEntries.length === 0) loadSchedule();
+  }
+  function showMain() {
+    headerSettings.hidden = true;
+    viewSettings.hidden = true;
+    headerMain.hidden = false;
+    viewMain.hidden = false;
+  }
+  settingsOpenBtn.addEventListener("click", showSettings);
+  settingsCloseBtn.addEventListener("click", showMain);
 
   advancedInput.addEventListener("change", function () {
     advancedMode = advancedInput.checked;
@@ -45,6 +81,32 @@
         toggleInput.checked = !toggleInput.checked;
         toggle.classList.remove("disabled", "transitioning");
         showError("Failed to " + action + " homelab");
+      });
+  });
+
+  nightInput.addEventListener("change", function () {
+    if (nightInput.disabled) {
+      nightInput.checked = !nightInput.checked;
+      return;
+    }
+    const action = nightInput.checked ? "sleep" : "wake";
+    nightInput.disabled = true;
+
+    fetch("/api/night/" + action, { method: "POST" })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().then(function (data) {
+            throw new Error(data.error || "Failed");
+          });
+        }
+        pollInterval = POLL_FAST;
+        schedulePoll();
+      })
+      .catch(function (err) {
+        console.error(err);
+        nightInput.checked = !nightInput.checked;
+        nightInput.disabled = false;
+        showError("Failed to toggle night mode: " + err.message);
       });
   });
 
@@ -89,6 +151,7 @@
     // Toggle
     const isAwake = data.state === "awake";
     const isSleeping = data.state === "asleep";
+    const isNight = data.state === "night";
     toggleInput.checked = isAwake || (data.transitioning && data.state === "transitioning" && toggleInput.checked);
 
     if (data.transitioning) {
@@ -110,6 +173,17 @@
       });
       toggleInput.checked = running > total / 2;
     }
+
+    // Night-mode toggle: show only when configured server-side
+    if (data.night_mode_enabled) {
+      nightToggleEl.hidden = false;
+      nightInput.checked = isNight;
+      nightInput.disabled = !!data.transitioning;
+    } else {
+      nightToggleEl.hidden = true;
+    }
+
+    renderSnoozeBanner(data);
 
     // Labels
     labelSleep.classList.toggle("active", isSleeping);
@@ -194,12 +268,15 @@
           }
         }
 
-        html += '<div class="instance">';
+        html += '<div class="instance' + (inst.protected ? " protected" : "") + '">';
         html += '<span class="status-dot ' + dotClass + '"></span>';
         html += '<span class="instance-name">' + escapeHtml(inst.name) + "</span>";
+        if (inst.protected) {
+          html += '<span class="instance-lock" title="Protected — never auto-stopped">&#128274;</span>';
+        }
         html += '<span class="instance-meta">' + inst.type + "</span>";
 
-        if (advancedMode) {
+        if (advancedMode && !inst.protected) {
           var isRunning = inst.status === "running";
           var isStopped = inst.status === "stopped";
           var toggleDisabled = (currentState && currentState.transitioning) || (!isRunning && !isStopped);
@@ -313,6 +390,320 @@
         showError("Failed to " + action + " tier " + tier);
       });
   }
+
+  // --- Snooze banner ---
+
+  const SNOOZE_ENTRY = "night-sleep";
+  const IMMINENT_WINDOW_MIN = 60;
+
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function minutesUntil(iso) {
+    return (new Date(iso) - new Date()) / 60000;
+  }
+
+  function renderSnoozeBanner(data) {
+    // Hide banner if night mode unconfigured, already night/asleep, or
+    // currently transitioning.
+    if (!data.night_mode_enabled || data.state === "night" ||
+        data.state === "asleep" || data.transitioning) {
+      snoozeCard.hidden = true;
+      return;
+    }
+
+    const snoozes = data.snoozes || {};
+    const active = snoozes[SNOOZE_ENTRY];
+    const nextFires = data.next_fires || {};
+    const nextSleep = nextFires[SNOOZE_ENTRY];
+
+    if (active) {
+      snoozeCard.hidden = false;
+      if (active.deferred_fire_at &&
+          new Date(active.deferred_fire_at) > new Date()) {
+        snoozeLabel.textContent = "Sleep deferred to " + fmtTime(active.deferred_fire_at);
+      } else {
+        snoozeLabel.textContent = "Skipping tonight";
+      }
+      snoozeActions.innerHTML =
+        '<button type="button" class="push-btn push-btn-secondary" id="snooze-cancel-btn">Cancel</button>';
+      document.getElementById("snooze-cancel-btn").addEventListener("click", cancelSnooze);
+      return;
+    }
+
+    if (!nextSleep || minutesUntil(nextSleep) > IMMINENT_WINDOW_MIN || minutesUntil(nextSleep) < 0) {
+      snoozeCard.hidden = true;
+      return;
+    }
+
+    snoozeCard.hidden = false;
+    snoozeLabel.textContent = "Sleeping at " + fmtTime(nextSleep);
+    snoozeActions.innerHTML =
+      '<button type="button" class="push-btn push-btn-secondary" data-mode="skip">Skip tonight</button>' +
+      '<button type="button" class="push-btn" data-mode="30">+30m</button>' +
+      '<button type="button" class="push-btn" data-mode="60">+1h</button>';
+    snoozeActions.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => snoozeAction(btn.dataset.mode));
+    });
+  }
+
+  async function snoozeAction(mode) {
+    snoozeActions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    let body;
+    if (mode === "skip") {
+      body = { name: SNOOZE_ENTRY, mode: "skip_tonight" };
+    } else {
+      body = { name: SNOOZE_ENTRY, mode: "postpone", delay_minutes: parseInt(mode, 10) };
+    }
+    try {
+      const resp = await fetch("/api/snooze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error(t || "HTTP " + resp.status);
+      }
+      pollInterval = POLL_FAST;
+      schedulePoll();
+    } catch (err) {
+      console.error(err);
+      showError("Snooze failed: " + err.message);
+      snoozeActions.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    }
+  }
+
+  async function cancelSnooze() {
+    const btn = document.getElementById("snooze-cancel-btn");
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch("/api/snooze?name=" + encodeURIComponent(SNOOZE_ENTRY), {
+        method: "DELETE",
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      pollInterval = POLL_FAST;
+      schedulePoll();
+    } catch (err) {
+      console.error(err);
+      showError("Cancel failed: " + err.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // --- PWA: register service worker + push subscription flow ---
+
+  function urlBase64ToUint8Array(base64) {
+    const padding = "=".repeat((4 - base64.length % 4) % 4);
+    const safe = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(safe);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  let swRegistration = null;
+
+  async function initPWA() {
+    if (!("serviceWorker" in navigator)) {
+      pushLabel.textContent = "Notifications unavailable (no service worker)";
+      pushEnableBtn.disabled = true;
+      pushCardEl.hidden = false;
+      return;
+    }
+    if (!("PushManager" in window)) {
+      pushLabel.textContent = "Notifications unavailable on this browser";
+      pushEnableBtn.disabled = true;
+      pushCardEl.hidden = false;
+      return;
+    }
+    try {
+      swRegistration = await navigator.serviceWorker.register("/sw.js");
+    } catch (err) {
+      console.error("sw register failed:", err);
+      pushLabel.textContent = "Service worker failed: " + err.message;
+      pushEnableBtn.disabled = true;
+      pushCardEl.hidden = false;
+      return;
+    }
+    pushCardEl.hidden = false;
+    await refreshPushUI();
+  }
+
+  async function refreshPushUI() {
+    const existing = await swRegistration.pushManager.getSubscription();
+    if (existing) {
+      pushLabel.textContent = "Notifications enabled on this device";
+      pushEnableBtn.textContent = "Disable";
+      pushEnableBtn.dataset.action = "disable";
+      pushTestRow.hidden = false;
+    } else {
+      const perm = (typeof Notification !== "undefined") ? Notification.permission : "default";
+      pushLabel.textContent = perm === "denied"
+        ? "Notifications blocked — enable in Settings"
+        : "Enable push notifications";
+      pushEnableBtn.textContent = "Enable";
+      pushEnableBtn.dataset.action = "enable";
+      pushEnableBtn.disabled = (perm === "denied");
+      pushTestRow.hidden = true;
+    }
+  }
+
+  pushEnableBtn.addEventListener("click", async () => {
+    if (pushEnableBtn.dataset.action === "disable") {
+      pushEnableBtn.disabled = true;
+      try {
+        const sub = await swRegistration.pushManager.getSubscription();
+        if (sub) {
+          await fetch("/api/push/unsubscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ endpoint: sub.endpoint }),
+          });
+          await sub.unsubscribe();
+        }
+      } catch (err) {
+        console.error(err);
+        showError("Could not unsubscribe: " + err.message);
+      }
+      pushEnableBtn.disabled = false;
+      await refreshPushUI();
+      return;
+    }
+
+    pushEnableBtn.disabled = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        await refreshPushUI();
+        return;
+      }
+      const keyResp = await fetch("/api/push/vapid-key");
+      if (!keyResp.ok) throw new Error("vapid-key HTTP " + keyResp.status);
+      const { publicKey } = await keyResp.json();
+      const sub = await swRegistration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+      const subResp = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      if (!subResp.ok) throw new Error("subscribe HTTP " + subResp.status);
+    } catch (err) {
+      console.error(err);
+      showError("Could not enable notifications: " + err.message);
+    }
+    pushEnableBtn.disabled = false;
+    await refreshPushUI();
+  });
+
+  pushTestBtn.addEventListener("click", async () => {
+    pushTestBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/push/test", { method: "POST" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+    } catch (err) {
+      console.error(err);
+      showError("Test push failed: " + err.message);
+    }
+    pushTestBtn.disabled = false;
+  });
+
+  // --- Schedule editor ---
+
+  // Detect simple daily cron `M H * * *` and return "HH:MM", else null.
+  function cronToTime(cronStr) {
+    const parts = cronStr.trim().split(/\s+/);
+    if (parts.length !== 5) return null;
+    const [m, h, dom, mon, dow] = parts;
+    if (dom !== "*" || mon !== "*" || dow !== "*") return null;
+    if (!/^\d+$/.test(m) || !/^\d+$/.test(h)) return null;
+    return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+  }
+  function timeToCron(timeStr) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(timeStr);
+    if (!m) return null;
+    return `${parseInt(m[2], 10)} ${parseInt(m[1], 10)} * * *`;
+  }
+
+  async function loadSchedule() {
+    try {
+      const resp = await fetch("/api/schedule");
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      scheduleEntries = await resp.json();
+      renderSchedule();
+    } catch (err) {
+      console.error(err);
+      scheduleBody.textContent = "Could not load schedule: " + err.message;
+    }
+  }
+
+  function renderSchedule() {
+    let html = "";
+    scheduleEntries.forEach((entry, idx) => {
+      const t = cronToTime(entry.cron);
+      const isDaily = t !== null;
+      html += `<div class="schedule-row${isDaily ? "" : " advanced"}">`;
+      html += `<span class="schedule-row-label">${escapeHtml(entry.name || "(unnamed)")}</span>`;
+      if (isDaily) {
+        html += `<input type="time" class="schedule-row-time" data-idx="${idx}" value="${t}">`;
+      } else {
+        html += `<input type="text" class="schedule-row-time" data-idx="${idx}" value="${escapeHtml(entry.cron)}">`;
+      }
+      html += `</div>`;
+    });
+    html += `<div class="schedule-save">`;
+    html += `<span class="schedule-status" id="schedule-status"></span>`;
+    html += `<button type="button" class="push-btn" id="schedule-save-btn">Save</button>`;
+    html += `</div>`;
+    scheduleBody.innerHTML = html;
+
+    scheduleBody.querySelectorAll(".schedule-row-time").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        const val = e.target.value;
+        const isDaily = e.target.type === "time";
+        if (isDaily) {
+          const cron = timeToCron(val);
+          if (cron) scheduleEntries[idx].cron = cron;
+        } else {
+          scheduleEntries[idx].cron = val;
+        }
+      });
+    });
+    const saveBtn = document.getElementById("schedule-save-btn");
+    saveBtn.addEventListener("click", async () => {
+      const statusEl = document.getElementById("schedule-status");
+      saveBtn.disabled = true;
+      statusEl.textContent = "Saving…";
+      try {
+        const resp = await fetch("/api/schedule", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(scheduleEntries),
+        });
+        if (!resp.ok) {
+          const t = await resp.text();
+          throw new Error(t || ("HTTP " + resp.status));
+        }
+        scheduleEntries = await resp.json();
+        renderSchedule();
+        const s = document.getElementById("schedule-status");
+        if (s) s.textContent = "Saved.";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Save failed: " + err.message;
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  initPWA();
 
   // Start polling
   fetchStatus();

@@ -40,6 +40,7 @@ func DiscoverInstances(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, ma
 				Name: pi.Name,
 				Type: pi.Type,
 				Tier: td.Tier,
+				Tags: tags,
 			})
 		}
 	}

@@ -95,6 +95,37 @@ func isRouteNotFound(body []byte) bool {
 	return strings.HasPrefix(strings.TrimSpace(string(body)), "404 page not found")
 }
 
+// apiPostNight hits POST /api/night/{action}.
+func apiPostNight(serverURL, action string) error {
+	url := fmt.Sprintf("%s/api/night/%s", serverURL, action)
+	resp, err := http.Post(url, "", nil)
+	if err != nil {
+		return fmt.Errorf("reaching server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		return nil
+	case http.StatusConflict:
+		return fmt.Errorf("transition already in progress")
+	case http.StatusBadRequest:
+		return fmt.Errorf("night mode is not configured on the server (set night_mode.keep_awake_tags)")
+	case http.StatusNotFound:
+		if isRouteNotFound(body) {
+			return fmt.Errorf("server does not support %s — upgrade the homelab-manager binary on the server", url)
+		}
+		return fmt.Errorf("server returned 404: %s", strings.TrimSpace(string(body)))
+	default:
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+}
+
 // apiPostInstance hits POST /api/instance/{vmid}/{action}.
 func apiPostInstance(serverURL string, vmid int, action string) error {
 	url := fmt.Sprintf("%s/api/instance/%d/%s", serverURL, vmid, action)
@@ -388,6 +419,26 @@ func runTier(serverURL, action string, tier int) error {
 	m := newTransitionModel(serverURL, action)
 	m.skipPost = true
 	m.label = fmt.Sprintf("Tier %d", tier)
+	p := tea.NewProgram(m)
+	finalModel, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if fm, ok := finalModel.(transitionModel); ok && fm.err != nil {
+		return fm.err
+	}
+	return nil
+}
+
+// runNight triggers /api/night/{action} and waits (live TUI) for completion.
+func runNight(serverURL, action string) error {
+	if err := apiPostNight(serverURL, action); err != nil {
+		return err
+	}
+
+	m := newTransitionModel(serverURL, action)
+	m.skipPost = true
+	m.label = "Night mode"
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
 	if err != nil {

@@ -52,6 +52,13 @@ func TestDiscoverInstances(t *testing.T) {
 	if tierNames[2] != "control-plane" {
 		t.Errorf("tierNames[2] = %q, want control-plane", tierNames[2])
 	}
+
+	// Tags should be populated on every discovered instance.
+	for i, inst := range instances {
+		if len(inst.Tags) == 0 {
+			t.Errorf("instances[%d] (VMID %d): Tags empty, want populated", i, inst.VMID)
+		}
+	}
 }
 
 func TestDiscoverInstancesNoMatches(t *testing.T) {

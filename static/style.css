@@ -15,6 +15,7 @@
   --yellow: #ffd60a;
   --blue: #0a84ff;
   --orange: #ff9f0a;
+  --indigo: #5e5ce6;
   --separator: #38383a;
 }
 
@@ -32,6 +33,12 @@ body {
   padding: 60px 20px 40px;
 }
 
+/* The `hidden` attribute defaults to `display: none`, but element-level
+   display rules below would otherwise override it. */
+[hidden] {
+  display: none !important;
+}
+
 /* Header */
 header {
   display: flex;
@@ -40,10 +47,59 @@ header {
   margin-bottom: 40px;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 h1 {
   font-size: 34px;
   font-weight: 700;
   letter-spacing: -0.5px;
+}
+
+.icon-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 22px;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 8px;
+  font-family: inherit;
+}
+
+.icon-btn:active {
+  background: var(--surface-2);
+}
+
+.icon-btn-back {
+  font-size: 34px;
+  font-weight: 300;
+  color: var(--blue);
+  padding: 0 8px;
+}
+
+/* Settings view */
+.settings-section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin: 0 4px 8px;
+}
+
+#view-settings .push-card,
+#view-settings .schedule-card {
+  margin-bottom: 28px;
+}
+
+#view-settings .schedule-body {
+  border-top: 0;
+  padding: 4px 16px 16px;
 }
 
 .badge {
@@ -58,6 +114,7 @@ h1 {
 .badge.awake { background: var(--green); color: #000; }
 .badge.asleep { background: var(--text-secondary); color: #000; }
 .badge.mixed { background: var(--orange); color: #000; }
+.badge.night { background: var(--indigo); color: #fff; }
 .badge.transitioning { background: var(--blue); color: #fff; animation: pulse 1.5s ease-in-out infinite; }
 .badge.loading { background: var(--surface-2); color: var(--text-secondary); }
 
@@ -337,6 +394,16 @@ h1 {
   flex: 1;
 }
 
+.instance.protected .instance-name {
+  color: var(--text-secondary);
+}
+
+.instance-lock {
+  font-size: 12px;
+  margin-right: 8px;
+  opacity: 0.7;
+}
+
 .instance-meta {
   font-size: 13px;
   color: var(--text-secondary);
@@ -411,6 +478,199 @@ h1 {
 .advanced-label {
   font-size: 14px;
   color: var(--text-secondary);
+}
+
+/* Night-mode toggle (same row style as advanced-toggle, sits above tiers) */
+.night-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  background: var(--surface);
+  border-radius: 12px;
+}
+
+.night-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.night-toggle input:checked + .instance-slider {
+  background: var(--indigo);
+}
+
+/* Snooze banner */
+.snooze-card {
+  background: var(--surface);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+}
+
+.snooze-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.snooze-label {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.snooze-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.snooze-actions .push-btn {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.snooze-actions .push-btn-secondary {
+  background: var(--surface-2);
+}
+
+/* Push notifications card */
+.push-card {
+  background: var(--surface);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.push-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+.push-card-secondary {
+  border-top: 1px solid var(--separator);
+}
+
+.push-label {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.push-sublabel {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.push-btn {
+  appearance: none;
+  border: 0;
+  background: var(--blue);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.push-btn-secondary {
+  background: var(--surface-2);
+}
+
+.push-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Schedule card */
+.schedule-card {
+  background: var(--surface);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.schedule-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.schedule-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.schedule-chevron {
+  color: var(--text-secondary);
+  font-size: 13px;
+  transition: transform 0.2s ease;
+}
+
+.schedule-card.expanded .schedule-chevron {
+  transform: rotate(90deg);
+}
+
+.schedule-body {
+  border-top: 1px solid var(--separator);
+  padding: 8px 16px 16px;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--separator);
+}
+
+.schedule-row:last-of-type {
+  border-bottom: 0;
+}
+
+.schedule-row-label {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.schedule-row-time {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.schedule-row.advanced .schedule-row-time {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.schedule-save {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.schedule-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: auto;
+  align-self: center;
 }
 
 /* Footer */

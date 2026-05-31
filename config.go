@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,17 +22,42 @@ type TierConfig struct {
 	Name string `yaml:"name"`
 }
 
+type NightModeConfig struct {
+	KeepAwakeTags []string `yaml:"keep_awake_tags"`
+}
+
+type WebPushConfig struct {
+	VAPIDPublic  string `yaml:"vapid_public_key"`
+	VAPIDPrivate string `yaml:"vapid_private_key"`
+	VAPIDSubject string `yaml:"vapid_subject"`
+}
+
+// ScheduleEntry is one cron-driven job. Action is one of "", "night_sleep",
+// "night_wake", "wake", "sleep". Notify, if non-empty, is sent as a push
+// when the entry fires.
+type ScheduleEntry struct {
+	Name   string `yaml:"name" json:"name"`
+	Cron   string `yaml:"cron" json:"cron"`
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+	Notify string `yaml:"notify,omitempty" json:"notify,omitempty"`
+}
+
 // Instance is a runtime type representing a discovered Proxmox VM or LXC.
 type Instance struct {
 	VMID int
 	Name string
 	Type string // "qemu" or "lxc"
 	Tier int
+	Tags []string
 }
 
 type Config struct {
-	Proxmox  ProxmoxConfig `yaml:"proxmox"`
-	TierDefs []TierConfig  `yaml:"tiers"`
+	Proxmox        ProxmoxConfig   `yaml:"proxmox"`
+	TierDefs       []TierConfig    `yaml:"tiers"`
+	NightMode      NightModeConfig `yaml:"night_mode"`
+	NeverTouchTags []string        `yaml:"never_touch_tags"`
+	WebPush        WebPushConfig   `yaml:"web_push"`
+	Schedule       []ScheduleEntry `yaml:"schedule"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -48,7 +75,96 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	if cfg.WebPush.VAPIDSubject == "" {
+		cfg.WebPush.VAPIDSubject = "joelgrimberg@gmail.com"
+	}
+	// webpush-go prepends `mailto:` itself when the subscriber isn't an
+	// https URL — passing `mailto:foo@bar` produces a double prefix that
+	// Apple's push servers reject with BadJwtToken. Strip it if present.
+	cfg.WebPush.VAPIDSubject = strings.TrimPrefix(cfg.WebPush.VAPIDSubject, "mailto:")
+	if cfg.WebPush.VAPIDPublic == "" || cfg.WebPush.VAPIDPrivate == "" {
+		priv, pub, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			return nil, fmt.Errorf("generating VAPID keys: %w", err)
+		}
+		cfg.WebPush.VAPIDPublic = pub
+		cfg.WebPush.VAPIDPrivate = priv
+		if err := writeWebPushToConfig(path, cfg.WebPush); err != nil {
+			return nil, fmt.Errorf("persisting VAPID keys: %w", err)
+		}
+	}
+
 	return &cfg, nil
+}
+
+// writeWebPushToConfig adds/replaces the `web_push` section in config.yaml
+// while preserving the rest of the file (other sections, comments, ordering).
+func writeWebPushToConfig(path string, wp WebPushConfig) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("config root is not a mapping")
+	}
+	doc := root.Content[0]
+
+	var wpNode yaml.Node
+	if err := wpNode.Encode(wp); err != nil {
+		return err
+	}
+	upsertMapKey(doc, "web_push", &wpNode)
+
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o600)
+}
+
+// upsertMapKey inserts or replaces a key on a yaml mapping node.
+func upsertMapKey(mapping *yaml.Node, key string, value *yaml.Node) {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1] = value
+			return
+		}
+	}
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+	mapping.Content = append(mapping.Content, keyNode, value)
+}
+
+// WriteScheduleToConfig replaces the `schedule:` section in config.yaml
+// with the given entries, preserving the rest of the file.
+func WriteScheduleToConfig(path string, entries []ScheduleEntry) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("config root is not a mapping")
+	}
+	doc := root.Content[0]
+
+	var schedNode yaml.Node
+	if err := schedNode.Encode(entries); err != nil {
+		return err
+	}
+	upsertMapKey(doc, "schedule", &schedNode)
+
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o600)
 }
 
 func (c *Config) validate() error {

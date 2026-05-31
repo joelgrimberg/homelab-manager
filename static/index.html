@@ -4,36 +4,87 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Homelab">
+  <meta name="theme-color" content="#0a84ff">
   <title>Homelab</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="container">
-    <header>
+    <header id="header-main">
       <h1>Homelab</h1>
-      <span id="state-badge" class="badge">loading</span>
+      <div class="header-right">
+        <span id="state-badge" class="badge">loading</span>
+        <button type="button" class="icon-btn" id="settings-open-btn" aria-label="Settings">&#9881;</button>
+      </div>
     </header>
 
-    <div class="toggle-section">
-      <span class="toggle-label" id="toggle-label-sleep">Asleep</span>
-      <label class="toggle" id="toggle">
-        <input type="checkbox" id="toggle-input">
-        <span class="slider">
-          <span class="spinner" id="spinner"></span>
-        </span>
-      </label>
-      <span class="toggle-label" id="toggle-label-wake">Awake</span>
+    <header id="header-settings" hidden>
+      <button type="button" class="icon-btn icon-btn-back" id="settings-close-btn" aria-label="Back">&#x2039;</button>
+      <h1>Settings</h1>
+      <div class="header-right"></div>
+    </header>
+
+    <div id="view-main">
+      <div class="toggle-section">
+        <span class="toggle-label" id="toggle-label-sleep">Asleep</span>
+        <label class="toggle" id="toggle">
+          <input type="checkbox" id="toggle-input">
+          <span class="slider">
+            <span class="spinner" id="spinner"></span>
+          </span>
+        </label>
+        <span class="toggle-label" id="toggle-label-wake">Awake</span>
+      </div>
+
+      <div class="night-toggle" id="night-toggle" hidden>
+        <span class="night-label">Night mode</span>
+        <label class="instance-toggle">
+          <input type="checkbox" id="night-input">
+          <span class="instance-slider"></span>
+        </label>
+      </div>
+
+      <div class="snooze-card" id="snooze-card" hidden>
+        <div class="snooze-row">
+          <span class="snooze-label" id="snooze-label">Sleeping soon</span>
+        </div>
+        <div class="snooze-actions" id="snooze-actions"></div>
+      </div>
+
+      <div id="tiers"></div>
+
+      <div class="advanced-toggle" id="advanced-toggle">
+        <span class="advanced-label">Instance controls</span>
+        <label class="instance-toggle">
+          <input type="checkbox" id="advanced-input">
+          <span class="instance-slider"></span>
+        </label>
+      </div>
     </div>
 
-    <div id="tiers"></div>
+    <div id="view-settings" hidden>
+      <div class="settings-section-title">Notifications</div>
+      <div class="push-card" id="push-card" hidden>
+        <div class="push-card-row">
+          <span class="push-label" id="push-label">Notifications</span>
+          <button type="button" class="push-btn" id="push-enable-btn">Enable</button>
+        </div>
+        <div class="push-card-row push-card-secondary" id="push-test-row" hidden>
+          <span class="push-sublabel">Send a test push to this device</span>
+          <button type="button" class="push-btn push-btn-secondary" id="push-test-btn">Test</button>
+        </div>
+      </div>
 
-    <div class="advanced-toggle" id="advanced-toggle">
-      <span class="advanced-label">Instance controls</span>
-      <label class="instance-toggle">
-        <input type="checkbox" id="advanced-input">
-        <span class="instance-slider"></span>
-      </label>
+      <div class="settings-section-title">Schedule</div>
+      <div class="schedule-card" id="schedule-card">
+        <div class="schedule-body" id="schedule-body"></div>
+      </div>
     </div>
 
     <footer>
