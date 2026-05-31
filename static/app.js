@@ -666,16 +666,35 @@
 
   initPWA();
 
-  // Pause the hero video when the tab/PWA goes hidden to save CPU.
-  document.addEventListener("visibilitychange", function () {
+  // Hero video lifecycle. iOS PWA in standalone mode sometimes pauses
+  // on the first frame even with `muted playsinline autoplay`; nudge it
+  // explicitly when the video is loaded, and again on the first touch as
+  // a fallback if iOS refused the autoplay.
+  (function () {
     var v = document.querySelector(".hero-video");
     if (!v) return;
-    if (document.hidden) {
-      v.pause();
+    var tryPlay = function () { v.play().catch(function () {}); };
+    if (v.readyState >= 2) {
+      tryPlay();
     } else {
-      v.play().catch(function () { /* autoplay block: ignore */ });
+      v.addEventListener("loadeddata", tryPlay, { once: true });
+      v.addEventListener("canplay", tryPlay, { once: true });
     }
-  });
+    // First user gesture unblocks playback if iOS denied autoplay.
+    var onGesture = function () {
+      tryPlay();
+      document.removeEventListener("touchstart", onGesture);
+      document.removeEventListener("click", onGesture);
+    };
+    document.addEventListener("touchstart", onGesture, { passive: true });
+    document.addEventListener("click", onGesture);
+
+    // Pause when the PWA is backgrounded to save CPU; resume on return.
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) v.pause();
+      else tryPlay();
+    });
+  })();
 
   // Start polling
   fetchStatus();

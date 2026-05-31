@@ -17,6 +17,33 @@
   --orange: #ff9f0a;
   --indigo: #5e5ce6;
   --separator: #38383a;
+  --glass-bg: rgba(28, 28, 30, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.08);
+}
+
+/* Frosted-glass mix-in for the dark cards floating over the hero video.
+   The video sits at z-index: -2; backdrop-filter samples whatever is
+   visually behind the element. */
+.tier,
+.advanced-toggle,
+.snooze-card,
+.push-card,
+.schedule-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid var(--glass-border);
+}
+
+/* Fallback for browsers without backdrop-filter — solid surface instead. */
+@supports not (backdrop-filter: blur(1px)) {
+  .tier,
+  .advanced-toggle,
+  .snooze-card,
+  .push-card,
+  .schedule-card {
+    background: var(--surface);
+  }
 }
 
 body {
@@ -27,35 +54,38 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Desktop hero video — hidden by default; activated at ≥900px. The MP4 is
-   served from the LXC state dir, not embedded in the binary. */
-.hero-video, .hero-overlay { display: none; }
+/* Hero video — runs on every viewport. The MP4 is served from the LXC
+   state dir, not embedded in the binary. object-fit: cover crops
+   whatever falls outside the viewport; on iPhone (slightly taller than
+   the 9:16 source) that means narrow strips on the sides; on desktop
+   landscape it means the top and bottom are cropped, showing the
+   middle band. No black bars in either case. */
+body { background: transparent; }
 
-@media (min-width: 900px) {
-  body { background: transparent; }
-  .hero-video {
-    display: block;
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    object-fit: cover;
-    z-index: -2;
-  }
-  .hero-overlay {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: radial-gradient(ellipse at center,
-                                rgba(0,0,0,0.45) 0%,
-                                rgba(0,0,0,0.82) 100%);
-    z-index: -1;
-  }
+.hero-video {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  z-index: -2;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .hero-video, .hero-overlay { display: none; }
+.hero-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center,
+                              rgba(0,0,0,0.45) 0%,
+                              rgba(0,0,0,0.82) 100%);
+  z-index: -1;
 }
+
+/* Intentionally NOT honoring `prefers-reduced-motion: reduce` for the hero
+   video. A muted looping background isn't the kind of motion the
+   accessibility setting is meant to protect against, and several
+   environments (Hyprland with GTK animations off, Firefox config) report
+   reduce by default. The big toggle/UI stays still and dominates the
+   screen — the video is decorative. */
 
 .container {
   max-width: 500px;
@@ -264,9 +294,8 @@ h1 {
 
 /* Tier sections */
 .tier {
-  background: var(--surface);
   border-radius: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 18px;
   overflow: hidden;
 }
 
@@ -391,35 +420,69 @@ h1 {
   border-top: 1px solid var(--separator);
 }
 
+/* Status dots — glass-marble look: solid color core + outer glow +
+   inner highlight + thin white edge. Reads at a glance at 8px while
+   feeling like a backlit jewel. */
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   margin-right: 12px;
   flex-shrink: 0;
+  border: 0.5px solid rgba(255, 255, 255, 0.25);
+  background-blend-mode: screen;
 }
 
-.status-dot.running { background: var(--green); }
-.status-dot.stopped { background: var(--red); }
-.status-dot.unknown { background: var(--text-secondary); }
+.status-dot.running {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--green);
+  box-shadow: 0 0 8px rgba(48, 209, 88, 0.6);
+}
+.status-dot.stopped {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--red);
+  box-shadow: 0 0 8px rgba(255, 69, 58, 0.6);
+}
+.status-dot.unknown {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.35), transparent 55%),
+    var(--text-secondary);
+  box-shadow: 0 0 6px rgba(142, 142, 147, 0.5);
+}
 .status-dot.transitioning {
-  background: var(--yellow);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--yellow);
+  box-shadow: 0 0 8px rgba(255, 214, 10, 0.6);
   animation: pulse 1s ease-in-out infinite;
 }
 .status-dot.processing {
-  background: var(--blue);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--blue);
+  box-shadow: 0 0 8px rgba(10, 132, 255, 0.6);
   animation: pulse 1s ease-in-out infinite;
 }
 .status-dot.pending {
-  background: var(--text-secondary);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25), transparent 55%),
+    var(--text-secondary);
   opacity: 0.4;
 }
 .status-dot.stopping {
-  background: var(--red);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--red);
+  box-shadow: 0 0 8px rgba(255, 69, 58, 0.6);
   animation: pulse 1s ease-in-out infinite;
 }
 .status-dot.stuck {
-  background: var(--orange);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.45), transparent 55%),
+    var(--orange);
+  box-shadow: 0 0 10px rgba(255, 159, 10, 0.7);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
@@ -514,8 +577,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  margin-top: 20px;
-  background: var(--surface);
+  margin-top: 32px;
   border-radius: 12px;
 }
 
@@ -526,7 +588,6 @@ h1 {
 
 /* Snooze banner */
 .snooze-card {
-  background: var(--surface);
   border-radius: 12px;
   margin-bottom: 20px;
   padding: 12px 16px;
@@ -562,7 +623,6 @@ h1 {
 
 /* Push notifications card */
 .push-card {
-  background: var(--surface);
   border-radius: 12px;
   margin-bottom: 20px;
   overflow: hidden;
@@ -613,7 +673,6 @@ h1 {
 
 /* Schedule card */
 .schedule-card {
-  background: var(--surface);
   border-radius: 12px;
   margin-bottom: 20px;
   overflow: hidden;
