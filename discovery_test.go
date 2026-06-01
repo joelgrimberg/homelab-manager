@@ -130,6 +130,64 @@ func TestDiscoverInstancesCommaSeparated(t *testing.T) {
 	}
 }
 
+func TestDiscoverInstancesMultiTag(t *testing.T) {
+	// One tier (3) matches three alternative tags. A VM carrying only
+	// the "alternate" `machine-request.homelab-control-planes` tag — as
+	// emitted by the Omni provider — should still land in tier 3, even
+	// though the canonical `homelab` tag is absent.
+	mock := &mockProxmox{
+		statuses: map[int]string{},
+		vms: []ProxmoxInstance{
+			{VMID: 103, Name: "hl-cp-canon", Status: "running", Tags: "homelab;homelab-cp", Type: "qemu"},
+			{VMID: 106, Name: "hl-cp-provider", Status: "running", Tags: "go-proxmox+cloud-init;machine-request.homelab-control-planes", Type: "qemu"},
+			{VMID: 120, Name: "hl-worker", Status: "running", Tags: "machine-request.homelab-workers", Type: "qemu"},
+		},
+	}
+	tierDefs := []TierConfig{
+		{Tier: 3, Name: "homelab", Tags: []string{
+			"homelab",
+			"machine-request.homelab-control-planes",
+			"machine-request.homelab-workers",
+		}},
+	}
+	instances, _, err := DiscoverInstances(mock, tierDefs)
+	if err != nil {
+		t.Fatalf("DiscoverInstances() error: %v", err)
+	}
+	if len(instances) != 3 {
+		t.Fatalf("got %d instances, want 3", len(instances))
+	}
+	for _, inst := range instances {
+		if inst.Tier != 3 {
+			t.Errorf("VMID %d landed in tier %d, want 3", inst.VMID, inst.Tier)
+		}
+	}
+}
+
+func TestTierConfigAllTags(t *testing.T) {
+	cases := []struct {
+		name string
+		t    TierConfig
+		want []string
+	}{
+		{"tags-wins", TierConfig{Tag: "old", Tags: []string{"a", "b"}}, []string{"a", "b"}},
+		{"tag-fallback", TierConfig{Tag: "old"}, []string{"old"}},
+		{"empty", TierConfig{}, nil},
+	}
+	for _, c := range cases {
+		got := c.t.AllTags()
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s[%d]: got %q want %q", c.name, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
 func TestParseTags(t *testing.T) {
 	tests := []struct {
 		input string

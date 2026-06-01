@@ -19,13 +19,18 @@ func DiscoverInstances(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, ma
 		return nil, nil, fmt.Errorf("listing LXCs: %w", err)
 	}
 
-	// Build tag → tier definition lookup
-	tagToTier := make(map[string]TierConfig, len(tierDefs))
+	// Build tag → tier definition lookup. Each tier may match more than
+	// one tag (e.g. both the canonical name and any provisioner-specific
+	// `machine-request.*` tag), so iterate AllTags().
+	tagToTier := make(map[string]TierConfig)
 	for _, td := range tierDefs {
-		tagToTier[td.Tag] = td
+		for _, tag := range td.AllTags() {
+			tagToTier[tag] = td
+		}
 	}
 
 	var instances []Instance
+	seen := map[int]bool{}
 	all := append(vms, lxcs...)
 
 	for _, pi := range all {
@@ -35,6 +40,12 @@ func DiscoverInstances(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, ma
 			if !ok {
 				continue
 			}
+			// One row per VM even if it matches multiple of a tier's tags
+			// (e.g. both `homelab` and `machine-request.homelab-*`).
+			if seen[pi.VMID] {
+				break
+			}
+			seen[pi.VMID] = true
 			instances = append(instances, Instance{
 				VMID: pi.VMID,
 				Name: pi.Name,

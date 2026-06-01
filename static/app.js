@@ -153,6 +153,51 @@
     lastUpdated.textContent = "Updated " + now.toLocaleTimeString();
   }
 
+  // Render a single instance row. `tierNum` is the tier number for
+  // transition-progress dot styling; pass null for always-on rows that
+  // never participate in a tiered transition.
+  function renderInstanceRow(inst, tierNum) {
+    var dotClass = inst.status;
+    if (inst.status !== "running" && inst.status !== "stopped") {
+      dotClass = "transitioning";
+    }
+    if (tierNum != null && currentState && currentState.transitioning && currentState.current_tier > 0) {
+      var dir = currentState.direction;
+      var curTier = currentState.current_tier;
+      if (dir === "waking") {
+        if (tierNum > curTier) dotClass = "pending";
+        else if (tierNum === curTier && inst.status !== "running") dotClass = "processing";
+      } else if (dir === "sleeping") {
+        if (tierNum < curTier) dotClass = "pending";
+        else if (tierNum === curTier && inst.status !== "stopped") dotClass = "stopping";
+      }
+    }
+    if (inst.stuck) dotClass = "stuck";
+
+    var html = '<div class="instance' + (inst.protected ? " protected" : "") + (inst.stuck ? " stuck" : "") + '">';
+    html += '<span class="status-dot ' + dotClass + '"></span>';
+    html += '<span class="instance-name">' + escapeHtml(inst.name) + "</span>";
+    if (inst.protected) {
+      html += '<span class="instance-lock" title="Protected — never auto-stopped">&#128274;</span>';
+    }
+    if (inst.stuck) {
+      html += '<span class="instance-warn" title="Did not reach target during last transition">&#9888;</span>';
+    }
+    if (advancedMode && !inst.protected) {
+      var isRunning = inst.status === "running";
+      var isStopped = inst.status === "stopped";
+      var toggleDisabled = (currentState && currentState.transitioning) || (!isRunning && !isStopped);
+      var toggleChecked = isRunning;
+      html += '<label class="instance-toggle' + (toggleDisabled ? " disabled" : "") + '">';
+      html += '<input type="checkbox"' + (toggleChecked ? " checked" : "") + (toggleDisabled ? " disabled" : "");
+      html += ' data-vmid="' + inst.vmid + '">';
+      html += '<span class="instance-slider"></span>';
+      html += "</label>";
+    }
+    html += "</div>";
+    return html;
+  }
+
   function renderTiers(tiers) {
     // Preserve existing expanded state; default tier 1 to expanded on first render
     if (Object.keys(expanded).length === 0) {
@@ -161,17 +206,43 @@
       });
     }
 
-    var html = "";
+    // Collect protected instances across every tier — they go in their
+    // own "Always on" card above the tier list since they're locked
+    // (never_touch) and don't participate in any transition.
+    var alwaysOn = [];
     tiers.forEach(function (tier) {
+      tier.instances.forEach(function (inst) {
+        if (inst.protected) alwaysOn.push(inst);
+      });
+    });
+
+    var html = "";
+
+    if (alwaysOn.length > 0) {
+      html += '<div class="always-on-card">';
+      html += '<div class="always-on-header">';
+      html += '<span class="always-on-title">Always on</span>';
+      html += "</div>";
+      html += '<div class="always-on-instances">';
+      alwaysOn.forEach(function (inst) {
+        html += renderInstanceRow(inst, null);
+      });
+      html += "</div></div>";
+    }
+
+    tiers.forEach(function (tier) {
+      // Skip protected instances — they're already in the Always-on card.
+      var instances = tier.instances.filter(function (inst) { return !inst.protected; });
+      if (instances.length === 0) return;
+
       var isExpanded = expanded[tier.tier];
 
-      // Roll up instance statuses → tier state
       var running = 0, stopped = 0;
-      tier.instances.forEach(function (inst) {
+      instances.forEach(function (inst) {
         if (inst.status === "running") running++;
         else if (inst.status === "stopped") stopped++;
       });
-      var tierChecked = running > 0 && running >= stopped; // majority-running
+      var tierChecked = running > 0 && running >= stopped;
       var tierDisabled = !!(currentState && currentState.transitioning);
       var tierMixed = running > 0 && stopped > 0;
 
@@ -192,67 +263,9 @@
       html += "</span>";
       html += "</div>";
       html += '<div class="tier-instances">';
-
-      tier.instances.forEach(function (inst) {
-        var dotClass = inst.status;
-        if (inst.status !== "running" && inst.status !== "stopped") {
-          dotClass = "transitioning";
-        }
-
-        // During a transition, override dot classes based on tier progress
-        if (currentState && currentState.transitioning && currentState.current_tier > 0) {
-          var dir = currentState.direction;
-          var curTier = currentState.current_tier;
-          if (dir === "waking") {
-            // Tiers after current: pending (haven't started yet)
-            if (tier.tier > curTier) {
-              dotClass = "pending";
-            }
-            // Current tier: show processing if not yet running
-            else if (tier.tier === curTier && inst.status !== "running") {
-              dotClass = "processing";
-            }
-          } else if (dir === "sleeping") {
-            // Tiers before current: pending (haven't been stopped yet)
-            if (tier.tier < curTier) {
-              dotClass = "pending";
-            }
-            // Current tier: show stopping if not yet stopped
-            else if (tier.tier === curTier && inst.status !== "stopped") {
-              dotClass = "stopping";
-            }
-          }
-        }
-
-        if (inst.stuck) dotClass = "stuck";
-
-        html += '<div class="instance' + (inst.protected ? " protected" : "") + (inst.stuck ? " stuck" : "") + '">';
-        html += '<span class="status-dot ' + dotClass + '"></span>';
-        html += '<span class="instance-name">' + escapeHtml(inst.name) + "</span>";
-        if (inst.protected) {
-          html += '<span class="instance-lock" title="Protected — never auto-stopped">&#128274;</span>';
-        }
-        if (inst.stuck) {
-          html += '<span class="instance-warn" title="Did not reach target during last transition">&#9888;</span>';
-        }
-        html += '<span class="instance-meta">' + inst.type + "</span>";
-
-        if (advancedMode && !inst.protected) {
-          var isRunning = inst.status === "running";
-          var isStopped = inst.status === "stopped";
-          var toggleDisabled = (currentState && currentState.transitioning) || (!isRunning && !isStopped);
-          var toggleChecked = isRunning;
-
-          html += '<label class="instance-toggle' + (toggleDisabled ? " disabled" : "") + '">';
-          html += '<input type="checkbox"' + (toggleChecked ? " checked" : "") + (toggleDisabled ? " disabled" : "");
-          html += ' data-vmid="' + inst.vmid + '">';
-          html += '<span class="instance-slider"></span>';
-          html += "</label>";
-        }
-
-        html += "</div>";
+      instances.forEach(function (inst) {
+        html += renderInstanceRow(inst, tier.tier);
       });
-
       html += "</div></div>";
     });
 

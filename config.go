@@ -17,9 +17,28 @@ type ProxmoxConfig struct {
 }
 
 type TierConfig struct {
-	Tag  string `yaml:"tag"`
-	Tier int    `yaml:"tier"`
-	Name string `yaml:"name"`
+	// Tag is the legacy single-tag form. Tags is the new multi-tag form
+	// used when a tier should match several different Proxmox tags (for
+	// example when an external provisioner emits a tag like
+	// `machine-request.foo` that we want lumped into the same tier as
+	// the hand-applied `foo`). Either field works; if both are set,
+	// Tags wins.
+	Tag  string   `yaml:"tag,omitempty"`
+	Tags []string `yaml:"tags,omitempty"`
+	Tier int      `yaml:"tier"`
+	Name string   `yaml:"name"`
+}
+
+// AllTags returns the union of Tags and Tag — the full set of Proxmox
+// tags that should map to this tier.
+func (t TierConfig) AllTags() []string {
+	if len(t.Tags) > 0 {
+		return t.Tags
+	}
+	if t.Tag != "" {
+		return []string{t.Tag}
+	}
+	return nil
 }
 
 type NightModeConfig struct {
@@ -185,8 +204,8 @@ func (c *Config) validate() error {
 	}
 	seen := map[int]bool{}
 	for i, td := range c.TierDefs {
-		if td.Tag == "" {
-			return fmt.Errorf("tiers[%d]: tag is required", i)
+		if len(td.AllTags()) == 0 {
+			return fmt.Errorf("tiers[%d]: at least one of `tag` or `tags` is required", i)
 		}
 		if td.Tier < 1 {
 			return fmt.Errorf("tiers[%d]: tier must be >= 1", i)
