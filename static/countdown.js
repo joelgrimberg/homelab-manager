@@ -5,7 +5,7 @@
   const STATUS_POLL_MS = 5000;
   const TICK_MS = 250;
   const IMMINENT_S = 60;          // last minute → orange/pulse
-  const SNOOZE_MINUTES = 15;
+  const SNOOZE_MINUTES = 30;
 
   const timerEl = document.getElementById("countdown-timer");
   const eyebrowEl = document.getElementById("countdown-eyebrow");

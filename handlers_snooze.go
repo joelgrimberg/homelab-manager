@@ -76,18 +76,37 @@ func (h *SnoozeHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		delay := time.Duration(req.DelayMinutes) * time.Minute
 		name := req.Name
+
+		// "Postpone" adds delay to the CURRENT scheduled sleep — either
+		// an active snooze's deferred fire or the next recurring cron.
+		// So "+30 min" tapped at 21:00 (warning) with sleep at 21:30
+		// moves sleep to 22:00, not "30 min from now". Another tap at
+		// 21:50 moves it to 22:30. The user-facing label matches the
+		// effect: each tap always adds delay minutes on top.
+		now := time.Now()
+		var base time.Time
+		if existing, ok := h.snooze.Get(name); ok && !existing.DeferredFireAt.IsZero() && existing.DeferredFireAt.After(now) {
+			base = existing.DeferredFireAt
+		} else if next, ok := h.sched.NextFires()[name]; ok && next.After(now) {
+			base = next
+		} else {
+			base = now
+		}
+		target := base.Add(delay)
+		actualDelay := target.Sub(now)
+		if actualDelay <= 0 {
+			actualDelay = delay // degenerate fallback
+		}
+
 		runOnce := func() { h.sched.RunOnce(name) }
+		warnBefore, warn := h.warnPushFor(name, actualDelay)
 
-		// If the target entry declares WarnBefore + Snooze*, schedule a
-		// T-X "imminent" push so the user gets another chance to snooze.
-		warnBefore, warn := h.warnPushFor(name, delay)
-
-		err := h.snooze.PostponeWithWarning(name, delay, warnBefore, runOnce, warn)
+		err := h.snooze.PostponeWithWarning(name, actualDelay, warnBefore, runOnce, warn)
 		if err != nil {
 			http.Error(w, "could not postpone: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("snooze: postpone %q by %s", req.Name, delay)
+		log.Printf("snooze: extend %q by %s → sleep at %s", req.Name, delay, target.Format(time.RFC3339))
 	default:
 		http.Error(w, fmt.Sprintf("mode must be skip_tonight or postpone (got %q)", req.Mode), http.StatusBadRequest)
 		return
@@ -128,7 +147,7 @@ func (h *SnoozeHandler) warnPushFor(name string, delay time.Duration) (time.Dura
 			"click_url": "/countdown",
 		}
 		actions := []NotifyAction{
-			{Action: "snooze", Title: fmt.Sprintf("Snooze %dm", e.SnoozeMinutes)},
+			{Action: "snooze", Title: fmt.Sprintf("+%d min", e.SnoozeMinutes)},
 		}
 		warn := func() { h.pm.NotifyWithActions("Homelab", body, data, actions) }
 		return d, warn

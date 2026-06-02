@@ -402,8 +402,12 @@
         snoozeLabel.textContent = "Skipping tonight";
       }
       snoozeActions.innerHTML =
+        '<button type="button" class="push-btn" data-mode="30">+30 min</button>' +
         '<button type="button" class="push-btn push-btn-secondary" id="snooze-cancel-btn">Cancel</button>';
       document.getElementById("snooze-cancel-btn").addEventListener("click", cancelSnooze);
+      snoozeActions.querySelectorAll("button[data-mode]").forEach((btn) => {
+        btn.addEventListener("click", () => snoozeAction(btn.dataset.mode));
+      });
       return;
     }
 
@@ -415,9 +419,8 @@
     snoozeCard.hidden = false;
     snoozeLabel.textContent = "Sleeping at " + fmtTime(nextSleep);
     snoozeActions.innerHTML =
-      '<button type="button" class="push-btn push-btn-secondary" data-mode="skip">Skip tonight</button>' +
-      '<button type="button" class="push-btn" data-mode="30">+30m</button>' +
-      '<button type="button" class="push-btn" data-mode="60">+1h</button>';
+      '<button type="button" class="push-btn" data-mode="30">+30 min</button>' +
+      '<button type="button" class="push-btn push-btn-secondary" data-mode="skip">Skip tonight</button>';
     snoozeActions.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => snoozeAction(btn.dataset.mode));
     });

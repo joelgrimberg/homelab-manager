@@ -163,7 +163,7 @@ func (s *Scheduler) emitNotify(e ScheduleEntry) {
 		"click_url": "/countdown",
 	}
 	actions := []NotifyAction{
-		{Action: "snooze", Title: fmt.Sprintf("Snooze %dm", e.SnoozeMinutes)},
+		{Action: "snooze", Title: fmt.Sprintf("+%d min", e.SnoozeMinutes)},
 	}
 	an.NotifyWithActions("Homelab", e.Notify, data, actions)
 }

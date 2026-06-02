@@ -35,6 +35,49 @@ func newSnoozeFixture(t *testing.T) (*SnoozeHandler, *SnoozeManager, *Scheduler,
 	return NewSnoozeHandler(sm, sched, orch, nil), sm, sched, orch
 }
 
+// TestSnoozeHandlerPostponeStacksOnExistingSnooze: a second postpone tap
+// while a snooze is already active should ADD delay to the current
+// deferred fire, not reset to "delay from now". I.e. +30 then +30 = +60.
+func TestSnoozeHandlerPostponeStacksOnExistingSnooze(t *testing.T) {
+	h, sm, _, _ := newSnoozeFixture(t)
+
+	// First tap: with no active snooze, base = next cron fire (today's
+	// or tomorrow's 21:05) so we use a small delay to keep the test
+	// fast without needing to wait for the timer to fire.
+	body, _ := json.Marshal(map[string]any{
+		"name":          "night-sleep",
+		"mode":          "postpone",
+		"delay_minutes": 30,
+	})
+	req := httptest.NewRequest("POST", "/api/snooze", bytes.NewReader(body))
+	h.Handle(httptest.NewRecorder(), req)
+
+	first, ok := sm.Get("night-sleep")
+	if !ok {
+		t.Fatal("first postpone didn't store snooze")
+	}
+
+	// Second tap: now base = first.DeferredFireAt, so the new deferred
+	// fire should be ~30 min later than the first.
+	body2, _ := json.Marshal(map[string]any{
+		"name":          "night-sleep",
+		"mode":          "postpone",
+		"delay_minutes": 30,
+	})
+	req2 := httptest.NewRequest("POST", "/api/snooze", bytes.NewReader(body2))
+	h.Handle(httptest.NewRecorder(), req2)
+
+	second, ok := sm.Get("night-sleep")
+	if !ok {
+		t.Fatal("second postpone didn't store snooze")
+	}
+
+	gap := second.DeferredFireAt.Sub(first.DeferredFireAt)
+	if gap < 29*time.Minute || gap > 31*time.Minute {
+		t.Errorf("second tap should add ~30m on top of first; gap = %s", gap)
+	}
+}
+
 func TestSnoozeHandlerPostpone(t *testing.T) {
 	h, sm, _, _ := newSnoozeFixture(t)
 	body, _ := json.Marshal(map[string]any{

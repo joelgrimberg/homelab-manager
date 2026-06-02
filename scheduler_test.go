@@ -177,6 +177,9 @@ func TestEmitNotifyWithSnoozeAction(t *testing.T) {
 	if len(got.actions) != 1 || got.actions[0].Action != "snooze" {
 		t.Errorf("actions = %v", got.actions)
 	}
+	if got.actions[0].Title != "+15 min" {
+		t.Errorf("action title = %q, want +15 min", got.actions[0].Title)
+	}
 	if len(an.plain) != 0 {
 		t.Errorf("plain notifier should not have been called: %v", an.plain)
 	}
