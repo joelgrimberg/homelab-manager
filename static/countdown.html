@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/countdown.css" />
+    <title>Homelab — Countdown</title>
+  </head>
+  <body class="countdown-body">
+    <video class="hero-video" autoplay muted loop playsinline preload="auto" poster="/hero.jpg">
+      <source src="/hero.mp4" type="video/mp4" />
+    </video>
+    <div class="hero-overlay"></div>
+
+    <main class="countdown-main">
+      <a class="countdown-back" href="/" aria-label="Back to home">&#10094;</a>
+
+      <div class="countdown-eyebrow" id="countdown-eyebrow">Sleeping in</div>
+      <div class="countdown-timer" id="countdown-timer">--:--:--</div>
+      <div class="countdown-deadline" id="countdown-deadline">&nbsp;</div>
+
+      <button type="button" class="countdown-snooze" id="countdown-snooze" hidden>
+        Snooze 15m
+      </button>
+
+      <section class="countdown-log" id="countdown-log" hidden>
+        <header class="countdown-log-header">// homelab.sleep</header>
+        <ol class="countdown-log-lines" id="countdown-log-lines"></ol>
+      </section>
+    </main>
+
+    <script src="/countdown.js"></script>
+  </body>
+</html>

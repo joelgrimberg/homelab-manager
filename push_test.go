@@ -117,6 +117,49 @@ func TestPushManagerNotifyPrunesDead(t *testing.T) {
 	}
 }
 
+// TestBuildPayloadShape verifies the wire shape the service worker
+// receives: plain pushes have no data/actions keys; rich pushes do.
+func TestBuildPayloadShape(t *testing.T) {
+	plain := buildPayload("Homelab", "hello", nil, nil)
+	var got map[string]any
+	if err := json.Unmarshal(plain, &got); err != nil {
+		t.Fatalf("unmarshal plain: %v", err)
+	}
+	if got["title"] != "Homelab" || got["body"] != "hello" {
+		t.Errorf("plain payload: %v", got)
+	}
+	if _, hasData := got["data"]; hasData {
+		t.Errorf("plain payload should not include data: %v", got)
+	}
+	if _, hasActions := got["actions"]; hasActions {
+		t.Errorf("plain payload should not include actions: %v", got)
+	}
+
+	rich := buildPayload("Homelab", "Sleeping in 15 min",
+		map[string]any{"name": "night-sleep", "minutes": 15, "click_url": "/countdown"},
+		[]NotifyAction{{Action: "snooze", Title: "Snooze 15m"}},
+	)
+	got = nil
+	if err := json.Unmarshal(rich, &got); err != nil {
+		t.Fatalf("unmarshal rich: %v", err)
+	}
+	data, ok := got["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data missing or wrong type: %v", got)
+	}
+	if data["name"] != "night-sleep" || data["click_url"] != "/countdown" {
+		t.Errorf("data fields = %v", data)
+	}
+	actions, ok := got["actions"].([]any)
+	if !ok || len(actions) != 1 {
+		t.Fatalf("actions = %v", got["actions"])
+	}
+	a := actions[0].(map[string]any)
+	if a["action"] != "snooze" || a["title"] != "Snooze 15m" {
+		t.Errorf("action shape = %v", a)
+	}
+}
+
 // Compile-time check that PushManager satisfies the Notifier interface
 // used by the scheduler.
 var _ Notifier = (*PushManager)(nil)

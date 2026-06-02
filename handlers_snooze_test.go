@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newSnoozeFixture(t *testing.T) (*SnoozeHandler, *SnoozeManager, *Scheduler, *Orchestrator) {
@@ -31,7 +32,7 @@ func newSnoozeFixture(t *testing.T) (*SnoozeHandler, *SnoozeManager, *Scheduler,
 	sched.Start([]ScheduleEntry{
 		{Name: "night-sleep", Cron: "5 21 * * *", Action: "night_sleep", Notify: "sleep"},
 	})
-	return NewSnoozeHandler(sm, sched, orch), sm, sched, orch
+	return NewSnoozeHandler(sm, sched, orch, nil), sm, sched, orch
 }
 
 func TestSnoozeHandlerPostpone(t *testing.T) {
@@ -115,7 +116,7 @@ func TestSnoozeHandlerBlockedWhenAlreadyNight(t *testing.T) {
 	orch := NewOrchestrator(instances, map[int]string{1: "infra", 2: "other"}, nil, []string{"dns"}, nil, mock)
 	sched := NewScheduler(orch, &fakeNotifier{}, sm)
 	sched.Start(nil)
-	h := NewSnoozeHandler(sm, sched, orch)
+	h := NewSnoozeHandler(sm, sched, orch, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"name":          "night-sleep",
@@ -131,6 +132,148 @@ func TestSnoozeHandlerBlockedWhenAlreadyNight(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "night") {
 		t.Errorf("body should mention night; got %q", w.Body.String())
+	}
+}
+
+// TestSnoozeHandlerCancelFiresWhenCronAlreadyPassed: when the user cancels
+// a postponement whose original recurring cron has already fired today
+// (i.e. NextFires returns tomorrow), Cancel should fire RunOnce so the
+// system never silently behaves like "skip tonight." We force this by
+// directly setting DeferredFireAt into the past and using an hourly cron.
+func TestSnoozeHandlerCancelFiresWhenCronAlreadyPassed(t *testing.T) {
+	dir := t.TempDir()
+	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))
+	mock := newMockProxmox(map[int]string{100: "running", 200: "running"})
+	instances := []Instance{
+		{VMID: 100, Name: "dns", Type: "qemu", Tier: 1, Tags: []string{"dns"}},
+		{VMID: 200, Name: "vm", Type: "qemu", Tier: 2, Tags: []string{"other"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra", 2: "other"}, nil, []string{"dns"}, nil, mock)
+	orch.sleepTierDelay = 0
+	orch.waitTimeout = 300 * time.Millisecond
+	orch.verifyTimeout = 100 * time.Millisecond
+	orch.pollInterval = 10 * time.Millisecond
+
+	sched := NewScheduler(orch, &fakeNotifier{}, sm)
+	sched.Start([]ScheduleEntry{
+		{Name: "night-sleep", Cron: "0 * * * *", Action: "night_sleep", Notify: "sleep"},
+	})
+	h := NewSnoozeHandler(sm, sched, orch, nil)
+
+	// Inject a snooze whose deferred fire is already in the past — i.e.
+	// today's recurring fire has effectively passed.
+	sm.mu.Lock()
+	sm.state["night-sleep"] = Snooze{
+		SkipUntil:      time.Now().Add(1 * time.Hour),
+		DeferredFireAt: time.Now().Add(-1 * time.Minute),
+	}
+	sm.mu.Unlock()
+
+	req := httptest.NewRequest("DELETE", "/api/snooze?name=night-sleep", nil)
+	w := httptest.NewRecorder()
+	h.Handle(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	// RunOnce runs in a goroutine — wait for non-exempt Stop to be observed.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		mock.mu.Lock()
+		n := len(mock.stopped)
+		mock.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("Cancel after cron passed should fire RunOnce; no Stop observed")
+}
+
+// TestSnoozeHandlerCancelDoesNotFireWhenCronStillAhead: when the recurring
+// cron is still going to fire later today, Cancel should NOT fire RunOnce.
+// The cron will handle the sleep at its regular time.
+func TestSnoozeHandlerCancelDoesNotFireWhenCronStillAhead(t *testing.T) {
+	dir := t.TempDir()
+	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))
+	mock := newMockProxmox(map[int]string{100: "running", 200: "running"})
+	instances := []Instance{
+		{VMID: 100, Name: "dns", Type: "qemu", Tier: 1, Tags: []string{"dns"}},
+		{VMID: 200, Name: "vm", Type: "qemu", Tier: 2, Tags: []string{"other"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra", 2: "other"}, nil, []string{"dns"}, nil, mock)
+	sched := NewScheduler(orch, &fakeNotifier{}, sm)
+	// Every-minute cron: next fire is at most 60s away. Deferred fire is
+	// well beyond that, so next < deferred → cron will handle today.
+	sched.Start([]ScheduleEntry{
+		{Name: "night-sleep", Cron: "* * * * *", Action: "night_sleep", Notify: "sleep"},
+	})
+	h := NewSnoozeHandler(sm, sched, orch, nil)
+
+	sm.mu.Lock()
+	sm.state["night-sleep"] = Snooze{
+		SkipUntil:      time.Now().Add(10 * time.Minute),
+		DeferredFireAt: time.Now().Add(5 * time.Minute),
+	}
+	sm.mu.Unlock()
+
+	req := httptest.NewRequest("DELETE", "/api/snooze?name=night-sleep", nil)
+	w := httptest.NewRecorder()
+	h.Handle(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+
+	// Give the goroutine a moment in case it ran anyway.
+	time.Sleep(150 * time.Millisecond)
+	mock.mu.Lock()
+	n := len(mock.stopped)
+	mock.mu.Unlock()
+	if n != 0 {
+		t.Errorf("Cancel before cron fire should not trigger sleep; got %d stops", n)
+	}
+}
+
+// TestSnoozeHandlerCancelSkipTonightDoesNotFire: cancelling a skip_tonight
+// snooze (DeferredFireAt zero) is an explicit "undo skip" — must not
+// trigger an immediate sleep.
+func TestSnoozeHandlerCancelSkipTonightDoesNotFire(t *testing.T) {
+	dir := t.TempDir()
+	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))
+	mock := newMockProxmox(map[int]string{100: "running", 200: "running"})
+	instances := []Instance{
+		{VMID: 100, Name: "dns", Type: "qemu", Tier: 1, Tags: []string{"dns"}},
+		{VMID: 200, Name: "vm", Type: "qemu", Tier: 2, Tags: []string{"other"}},
+	}
+	orch := NewOrchestrator(instances, map[int]string{1: "infra", 2: "other"}, nil, []string{"dns"}, nil, mock)
+	sched := NewScheduler(orch, &fakeNotifier{}, sm)
+	sched.Start([]ScheduleEntry{
+		{Name: "night-sleep", Cron: "0 * * * *", Action: "night_sleep", Notify: "sleep"},
+	})
+	h := NewSnoozeHandler(sm, sched, orch, nil)
+
+	// Skip tonight: SkipUntil set, DeferredFireAt zero. The cron has
+	// already passed (we don't care here — the explicit skip means the
+	// user *wants* to stay awake), so Cancel must NOT silently fire.
+	sm.mu.Lock()
+	sm.state["night-sleep"] = Snooze{
+		SkipUntil: time.Now().Add(8 * time.Hour),
+	}
+	sm.mu.Unlock()
+
+	req := httptest.NewRequest("DELETE", "/api/snooze?name=night-sleep", nil)
+	w := httptest.NewRecorder()
+	h.Handle(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	mock.mu.Lock()
+	n := len(mock.stopped)
+	mock.mu.Unlock()
+	if n != 0 {
+		t.Errorf("Cancel of skip_tonight should not trigger sleep; got %d stops", n)
 	}
 }
 

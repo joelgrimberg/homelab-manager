@@ -13,10 +13,11 @@ type SnoozeHandler struct {
 	snooze *SnoozeManager
 	sched  *Scheduler
 	orch   *Orchestrator
+	pm     *PushManager
 }
 
-func NewSnoozeHandler(sm *SnoozeManager, sched *Scheduler, orch *Orchestrator) *SnoozeHandler {
-	return &SnoozeHandler{snooze: sm, sched: sched, orch: orch}
+func NewSnoozeHandler(sm *SnoozeManager, sched *Scheduler, orch *Orchestrator, pm *PushManager) *SnoozeHandler {
+	return &SnoozeHandler{snooze: sm, sched: sched, orch: orch, pm: pm}
 }
 
 type snoozeRequest struct {
@@ -75,7 +76,13 @@ func (h *SnoozeHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		delay := time.Duration(req.DelayMinutes) * time.Minute
 		name := req.Name
-		err := h.snooze.Postpone(name, delay, func() { h.sched.RunOnce(name) })
+		runOnce := func() { h.sched.RunOnce(name) }
+
+		// If the target entry declares WarnBefore + Snooze*, schedule a
+		// T-X "imminent" push so the user gets another chance to snooze.
+		warnBefore, warn := h.warnPushFor(name, delay)
+
+		err := h.snooze.PostponeWithWarning(name, delay, warnBefore, runOnce, warn)
 		if err != nil {
 			http.Error(w, "could not postpone: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -94,17 +101,75 @@ func (h *SnoozeHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// warnPushFor looks up the schedule entry for `name` and, if it declares
+// a valid WarnBefore + Snooze*, returns the warn-before duration and a
+// callback that pushes the T-X "Sleeping in <warnBefore>" reminder with
+// another snooze button. Returns (0, nil) when the entry doesn't opt in
+// or PushManager is unavailable.
+func (h *SnoozeHandler) warnPushFor(name string, delay time.Duration) (time.Duration, func()) {
+	if h.pm == nil {
+		return 0, nil
+	}
+	for _, e := range h.sched.Entries() {
+		if e.Name != name {
+			continue
+		}
+		if e.WarnBefore == "" || e.SnoozeTarget == "" || e.SnoozeMinutes <= 0 {
+			return 0, nil
+		}
+		d, err := time.ParseDuration(e.WarnBefore)
+		if err != nil || d <= 0 || d >= delay {
+			return 0, nil
+		}
+		body := fmt.Sprintf("Sleeping in %s", d)
+		data := map[string]any{
+			"name":      e.SnoozeTarget,
+			"minutes":   e.SnoozeMinutes,
+			"click_url": "/countdown",
+		}
+		actions := []NotifyAction{
+			{Action: "snooze", Title: fmt.Sprintf("Snooze %dm", e.SnoozeMinutes)},
+		}
+		warn := func() { h.pm.NotifyWithActions("Homelab", body, data, actions) }
+		return d, warn
+	}
+	return 0, nil
+}
+
 func (h *SnoozeHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		http.Error(w, "name query param is required", http.StatusBadRequest)
 		return
 	}
+
+	// Capture the snooze state before clearing so we can detect the case
+	// where Cancel would otherwise silently behave like "skip tonight":
+	// the user postponed past the original cron fire, then cancelled — at
+	// that point the next recurring cron is tomorrow, so the deferred fire
+	// was the only remaining sleep event for today.
+	prev, hadSnooze := h.snooze.Get(name)
+
 	if err := h.snooze.Clear(name); err != nil {
 		http.Error(w, "could not clear: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	log.Printf("snooze: cleared %q", name)
+
+	// Postpone-style snoozes carry DeferredFireAt. If the next cron fire
+	// for this entry is later than that deferred time, today's recurring
+	// fire has already passed and Cancel would otherwise mean "no sleep
+	// tonight." Run the action now instead so Cancel always means "back
+	// to the schedule," never an accidental skip. Skip-style snoozes
+	// (DeferredFireAt zero) are intentional skips and untouched.
+	if hadSnooze && !prev.DeferredFireAt.IsZero() {
+		next := h.sched.NextFires()[name]
+		if next.IsZero() || next.After(prev.DeferredFireAt) {
+			log.Printf("snooze: cancel after original cron passed — firing %q now", name)
+			go h.sched.RunOnce(name)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 }

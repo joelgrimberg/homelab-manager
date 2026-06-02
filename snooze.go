@@ -20,18 +20,24 @@ type Snooze struct {
 
 // SnoozeManager owns the persistent snooze map and the live one-shot timers
 // behind any deferred fires.
+//
+// warnTimers are best-effort, non-persisted T-1 (or similar) "imminent"
+// nudges scheduled alongside a Postpone. Lost on restart by design — the
+// actual sleep deferral still survives because it's in the persisted state.
 type SnoozeManager struct {
-	mu     sync.Mutex
-	path   string
-	state  map[string]Snooze
-	timers map[string]*time.Timer
+	mu         sync.Mutex
+	path       string
+	state      map[string]Snooze
+	timers     map[string]*time.Timer
+	warnTimers map[string]*time.Timer
 }
 
 func NewSnoozeManager(path string) (*SnoozeManager, error) {
 	sm := &SnoozeManager{
-		path:   path,
-		state:  map[string]Snooze{},
-		timers: map[string]*time.Timer{},
+		path:       path,
+		state:      map[string]Snooze{},
+		timers:     map[string]*time.Timer{},
+		warnTimers: map[string]*time.Timer{},
 	}
 	if err := sm.load(); err != nil {
 		return nil, err
@@ -92,6 +98,13 @@ func (sm *SnoozeManager) Skip(name string, until time.Time) error {
 // a one-shot timer that calls runOnce at now+delay. Any prior timer is
 // cancelled.
 func (sm *SnoozeManager) Postpone(name string, delay time.Duration, runOnce func()) error {
+	return sm.PostponeWithWarning(name, delay, 0, runOnce, nil)
+}
+
+// PostponeWithWarning is Postpone plus an optional, non-persisted T-X
+// nudge: when warnBefore > 0 and < delay, warn() fires at now+(delay-warnBefore).
+// Both timers are cancelled atomically by Clear or another Postpone call.
+func (sm *SnoozeManager) PostponeWithWarning(name string, delay, warnBefore time.Duration, runOnce func(), warn func()) error {
 	const grace = 5 * time.Minute
 	now := time.Now()
 	fireAt := now.Add(delay)
@@ -106,12 +119,26 @@ func (sm *SnoozeManager) Postpone(name string, delay time.Duration, runOnce func
 	sm.timers[name] = time.AfterFunc(delay, func() {
 		sm.mu.Lock()
 		delete(sm.timers, name)
+		// Cancel any sibling warn timer that hasn't fired (defensive — it
+		// should have already fired by now if scheduled correctly).
+		if wt, ok := sm.warnTimers[name]; ok {
+			wt.Stop()
+			delete(sm.warnTimers, name)
+		}
 		// Clear the persisted entry — the deferred fire is happening now.
 		delete(sm.state, name)
 		_ = sm.persist()
 		sm.mu.Unlock()
 		runOnce()
 	})
+	if warn != nil && warnBefore > 0 && warnBefore < delay {
+		sm.warnTimers[name] = time.AfterFunc(delay-warnBefore, func() {
+			sm.mu.Lock()
+			delete(sm.warnTimers, name)
+			sm.mu.Unlock()
+			warn()
+		})
+	}
 	return sm.persist()
 }
 
@@ -164,6 +191,10 @@ func (sm *SnoozeManager) cancelTimerLocked(name string) {
 	if t, ok := sm.timers[name]; ok {
 		t.Stop()
 		delete(sm.timers, name)
+	}
+	if wt, ok := sm.warnTimers[name]; ok {
+		wt.Stop()
+		delete(sm.warnTimers, name)
 	}
 }
 

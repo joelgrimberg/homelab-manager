@@ -75,6 +75,24 @@ type Orchestrator struct {
 	transitioning bool
 	direction     string // "waking", "sleeping", "night-waking", or "night-sleeping"
 	currentTier   int    // tier currently being processed
+
+	hub *EventHub // optional; nil disables event emission
+}
+
+// AttachEventHub wires in an EventHub so orchestrator transitions are
+// streamed over SSE to subscribers (the /countdown page). Calling with
+// nil disables emission again. Safe to call once at startup.
+func (o *Orchestrator) AttachEventHub(h *EventHub) {
+	o.hub = h
+}
+
+// emit publishes an event to the attached hub, if any. Cheap no-op when
+// the hub is nil — tests can safely ignore the event stream.
+func (o *Orchestrator) emit(e Event) {
+	if o.hub == nil {
+		return
+	}
+	o.hub.Publish(e)
 }
 
 // ProxmoxAPI is the interface for Proxmox operations (allows mocking).
@@ -469,6 +487,8 @@ func (o *Orchestrator) doNightSleep() {
 	defer o.endTransition()
 	o.clearStuck()
 
+	o.emit(Event{Type: "sleep_start"})
+
 	exempt, nonExempt := o.partitionByExemption()
 
 	// Bring exempt up first so dns stays resolvable while we shut the rest down.
@@ -477,6 +497,8 @@ func (o *Orchestrator) doNightSleep() {
 
 	o.recordStuck(o.verifySubset(exempt, "running"))
 	o.recordStuck(o.verifySubset(nonExempt, "stopped"))
+
+	o.emit(Event{Type: "sleep_complete"})
 
 	log.Println("night sleep complete")
 }
@@ -540,6 +562,10 @@ func (o *Orchestrator) processSubset(instances []Instance, action string) {
 		log.Printf("night %s tier %d: %d instances", action, tier, len(tierInsts))
 
 		for _, inst := range tierInsts {
+			o.emit(Event{
+				Type: "vm_action", Action: action,
+				VMID: inst.VMID, Name: inst.Name, Tier: inst.Tier,
+			})
 			var err error
 			if action == "start" {
 				err = o.client.Start(inst)
@@ -548,6 +574,11 @@ func (o *Orchestrator) processSubset(instances []Instance, action string) {
 			}
 			if err != nil {
 				log.Printf("error %sing %s (%d): %v", action, inst.Name, inst.VMID, err)
+				o.emit(Event{
+					Type: "vm_error",
+					VMID: inst.VMID, Name: inst.Name, Tier: inst.Tier,
+					Error: err.Error(),
+				})
 			}
 		}
 

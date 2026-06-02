@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -96,7 +97,11 @@ func cmdServe(args []string) {
 		log.Fatalf("scheduler start: %v", err)
 	}
 	schedHandler := NewScheduleHandler(sched, *configPath)
-	snoozeHandler := NewSnoozeHandler(snooze, sched, orch)
+	snoozeHandler := NewSnoozeHandler(snooze, sched, orch, pm)
+
+	hub := NewEventHub()
+	orch.AttachEventHub(hub)
+	eventsHandler := NewEventsHandler(hub)
 
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -113,6 +118,25 @@ func cmdServe(args []string) {
 			http.ServeFile(w, r, path)
 		})
 	}
+	// /countdown serves the SpaceX-style countdown page. The static FS
+	// won't auto-resolve /countdown to countdown.html, so wire it
+	// explicitly. Falls through to 404 if the file isn't embedded.
+	mux.HandleFunc("/countdown", func(w http.ResponseWriter, r *http.Request) {
+		f, err := staticFS.Open("countdown.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		stat, _ := f.Stat()
+		if ra, ok := f.(io.ReadSeeker); ok && stat != nil {
+			http.ServeContent(w, r, "countdown.html", stat.ModTime(), ra)
+			return
+		}
+		io.Copy(w, f)
+	})
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -138,6 +162,7 @@ func cmdServe(args []string) {
 	mux.HandleFunc("/api/push/test", pm.HandlePushTest)
 	mux.HandleFunc("/api/schedule", schedHandler.Handle)
 	mux.HandleFunc("/api/snooze", snoozeHandler.Handle)
+	mux.HandleFunc("/api/events", eventsHandler.Handle)
 
 	log.Printf("listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {

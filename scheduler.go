@@ -21,6 +21,14 @@ type Notifier interface {
 	Notify(title, body string)
 }
 
+// ActionNotifier is the optional extension that allows sending a push with
+// a `data` blob and clickable action buttons. PushManager implements it;
+// test fakes typically don't, in which case the scheduler falls back to
+// plain Notify.
+type ActionNotifier interface {
+	NotifyWithActions(title, body string, data map[string]any, actions []NotifyAction)
+}
+
 // Scheduler owns a robfig/cron.Cron and the current entry list. Reload is
 // safe to call from request handlers while jobs may be firing.
 type Scheduler struct {
@@ -102,9 +110,7 @@ func (s *Scheduler) run(e ScheduleEntry) {
 
 	log.Printf("scheduler: firing %q (action=%q)", e.Name, e.Action)
 
-	if e.Notify != "" && s.notify != nil {
-		s.notify.Notify("Homelab", e.Notify)
-	}
+	s.emitNotify(e)
 
 	s.dispatchAction(e)
 }
@@ -130,10 +136,36 @@ func (s *Scheduler) RunOnce(name string) {
 	// Bypass snooze: deferred fires must run even though their snooze
 	// entry was set with a SkipUntil covering this moment.
 	log.Printf("scheduler: deferred fire %q (action=%q)", entry.Name, entry.Action)
-	if entry.Notify != "" && s.notify != nil {
-		s.notify.Notify("Homelab", entry.Notify)
-	}
+	s.emitNotify(entry)
 	s.dispatchAction(entry)
+}
+
+// emitNotify sends the entry's notify message. If the entry declares a
+// SnoozeTarget and the underlying notifier supports actions, the push
+// includes a Snooze button targeting that entry and a click_url of
+// /countdown. Otherwise it falls back to a plain title+body push.
+func (s *Scheduler) emitNotify(e ScheduleEntry) {
+	if e.Notify == "" || s.notify == nil {
+		return
+	}
+	if e.SnoozeTarget == "" || e.SnoozeMinutes <= 0 {
+		s.notify.Notify("Homelab", e.Notify)
+		return
+	}
+	an, ok := s.notify.(ActionNotifier)
+	if !ok {
+		s.notify.Notify("Homelab", e.Notify)
+		return
+	}
+	data := map[string]any{
+		"name":      e.SnoozeTarget,
+		"minutes":   e.SnoozeMinutes,
+		"click_url": "/countdown",
+	}
+	actions := []NotifyAction{
+		{Action: "snooze", Title: fmt.Sprintf("Snooze %dm", e.SnoozeMinutes)},
+	}
+	an.NotifyWithActions("Homelab", e.Notify, data, actions)
 }
 
 // dispatchAction invokes the orchestrator method named by the entry.

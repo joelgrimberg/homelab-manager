@@ -140,6 +140,56 @@ func TestSnoozeIsSuppressedHonoredByScheduler(t *testing.T) {
 	}
 }
 
+func TestPostponeWithWarningFiresBoth(t *testing.T) {
+	dir := t.TempDir()
+	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))
+
+	var runFired, warnFired int32
+	var warnAt, runAt time.Time
+	start := time.Now()
+
+	err := sm.PostponeWithWarning("ns", 100*time.Millisecond, 60*time.Millisecond,
+		func() { runAt = time.Now(); atomic.AddInt32(&runFired, 1) },
+		func() { warnAt = time.Now(); atomic.AddInt32(&warnFired, 1) },
+	)
+	if err != nil {
+		t.Fatalf("Postpone: %v", err)
+	}
+	time.Sleep(180 * time.Millisecond)
+
+	if atomic.LoadInt32(&warnFired) != 1 {
+		t.Errorf("warn fired %d times, want 1", warnFired)
+	}
+	if atomic.LoadInt32(&runFired) != 1 {
+		t.Errorf("run fired %d times, want 1", runFired)
+	}
+	warnGap := warnAt.Sub(start)
+	if warnGap < 30*time.Millisecond || warnGap > 70*time.Millisecond {
+		t.Errorf("warn fired at +%s, want ~40ms (delay-warnBefore)", warnGap)
+	}
+	if runAt.Sub(warnAt) < 30*time.Millisecond {
+		t.Errorf("run should fire after warn; warn=%s run=%s", warnAt, runAt)
+	}
+}
+
+func TestPostponeWithWarningClearCancelsBoth(t *testing.T) {
+	dir := t.TempDir()
+	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))
+
+	var runFired, warnFired int32
+	sm.PostponeWithWarning("ns", 60*time.Millisecond, 30*time.Millisecond,
+		func() { atomic.AddInt32(&runFired, 1) },
+		func() { atomic.AddInt32(&warnFired, 1) },
+	)
+	if err := sm.Clear("ns"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if atomic.LoadInt32(&runFired) != 0 || atomic.LoadInt32(&warnFired) != 0 {
+		t.Errorf("after Clear: run=%d warn=%d, want 0/0", runFired, warnFired)
+	}
+}
+
 func TestSchedulerRunOnceBypassesSnooze(t *testing.T) {
 	dir := t.TempDir()
 	sm, _ := NewSnoozeManager(filepath.Join(dir, "snooze.json"))

@@ -1,0 +1,154 @@
+/* Countdown page — SpaceX-style ticking timer + terminal log panel.
+   Reuses the dark/hero/glass tokens from style.css. */
+
+.countdown-body {
+  min-height: 100dvh;
+}
+
+.countdown-main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 80px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.countdown-back {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 18px;
+  backdrop-filter: blur(2px) saturate(180%);
+  -webkit-backdrop-filter: blur(2px) saturate(180%);
+}
+
+.countdown-eyebrow {
+  font-size: 14px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.countdown-timer {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-weight: 200;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(64px, 18vw, 156px);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-shadow:
+    0 0 24px rgba(255, 255, 255, 0.18),
+    0 0 4px rgba(255, 255, 255, 0.35);
+  margin-top: 8px;
+}
+
+.countdown-timer.imminent {
+  color: var(--orange);
+  text-shadow:
+    0 0 32px rgba(255, 159, 10, 0.55),
+    0 0 8px rgba(255, 159, 10, 0.8);
+  animation: countdown-pulse 1s ease-in-out infinite;
+}
+
+.countdown-timer.fired {
+  color: var(--red);
+  text-shadow:
+    0 0 32px rgba(255, 69, 58, 0.6),
+    0 0 8px rgba(255, 69, 58, 0.9);
+}
+
+@keyframes countdown-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
+}
+
+.countdown-deadline {
+  color: var(--text-secondary);
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  min-height: 1.2em;
+}
+
+.countdown-snooze {
+  margin-top: 28px;
+  padding: 14px 28px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(1px) saturate(180%);
+  -webkit-backdrop-filter: blur(1px) saturate(180%);
+  cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+}
+
+.countdown-snooze:active     { transform: scale(0.97); }
+.countdown-snooze:disabled   { opacity: 0.5; cursor: default; }
+
+.countdown-log {
+  margin-top: 36px;
+  width: 100%;
+  max-width: 640px;
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid rgba(48, 209, 88, 0.25);
+  border-radius: 14px;
+  padding: 16px 18px;
+  text-align: left;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  color: var(--green);
+  box-shadow:
+    inset 0 0 24px rgba(48, 209, 88, 0.08),
+    0 8px 30px rgba(0, 0, 0, 0.55);
+}
+
+.countdown-log-header {
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+  margin-bottom: 8px;
+}
+
+.countdown-log-lines {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.countdown-log-lines li {
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  opacity: 0;
+  animation: countdown-log-fade 0.18s ease-out forwards;
+}
+
+.countdown-log-lines li.error  { color: var(--red); }
+.countdown-log-lines li.done   { color: var(--text-secondary); }
+
+@keyframes countdown-log-fade {
+  to { opacity: 1; }
+}

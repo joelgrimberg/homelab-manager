@@ -115,9 +115,41 @@ func (pm *PushManager) Count() int {
 	return len(pm.subs)
 }
 
+// NotifyAction is one button on a notification, mirroring the
+// NotificationAction wire shape consumed by the service worker. The
+// service worker reads `action` in its notificationclick handler.
+type NotifyAction struct {
+	Action string `json:"action"`
+	Title  string `json:"title"`
+}
+
+// buildPayload serializes the push body. data + actions are omitted when
+// nil so plain Notify calls produce the same bytes as before.
+func buildPayload(title, body string, data map[string]any, actions []NotifyAction) []byte {
+	p := map[string]any{
+		"title": title,
+		"body":  body,
+	}
+	if len(data) > 0 {
+		p["data"] = data
+	}
+	if len(actions) > 0 {
+		p["actions"] = actions
+	}
+	out, _ := json.Marshal(p)
+	return out
+}
+
 // Notify sends a push to every subscription. Dead subscriptions (404/410)
 // are pruned automatically.
 func (pm *PushManager) Notify(title, body string) {
+	pm.NotifyWithActions(title, body, nil, nil)
+}
+
+// NotifyWithActions sends a push that includes a `data` blob (passed to
+// the service worker's notificationclick handler) and an `actions` list
+// rendered as buttons on the notification.
+func (pm *PushManager) NotifyWithActions(title, body string, data map[string]any, actions []NotifyAction) {
 	pm.mu.Lock()
 	subs := append([]Subscription(nil), pm.subs...)
 	pm.mu.Unlock()
@@ -127,10 +159,7 @@ func (pm *PushManager) Notify(title, body string) {
 		return
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"title": title,
-		"body":  body,
-	})
+	payload := buildPayload(title, body, data, actions)
 
 	var dead []string
 	for _, sub := range subs {

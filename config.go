@@ -54,11 +54,19 @@ type WebPushConfig struct {
 // ScheduleEntry is one cron-driven job. Action is one of "", "night_sleep",
 // "night_wake", "wake", "sleep". Notify, if non-empty, is sent as a push
 // when the entry fires.
+//
+// SnoozeTarget/SnoozeMinutes/WarnBefore are optional and turn the notify
+// push into an actionable one with a Snooze button targeting another entry
+// (typically "night-sleep"). With SnoozeTarget empty the entry behaves
+// exactly as before.
 type ScheduleEntry struct {
-	Name   string `yaml:"name" json:"name"`
-	Cron   string `yaml:"cron" json:"cron"`
-	Action string `yaml:"action,omitempty" json:"action,omitempty"`
-	Notify string `yaml:"notify,omitempty" json:"notify,omitempty"`
+	Name          string `yaml:"name" json:"name"`
+	Cron          string `yaml:"cron" json:"cron"`
+	Action        string `yaml:"action,omitempty" json:"action,omitempty"`
+	Notify        string `yaml:"notify,omitempty" json:"notify,omitempty"`
+	SnoozeTarget  string `yaml:"snooze_target,omitempty" json:"snooze_target,omitempty"`
+	SnoozeMinutes int    `yaml:"snooze_minutes,omitempty" json:"snooze_minutes,omitempty"`
+	WarnBefore    string `yaml:"warn_before,omitempty" json:"warn_before,omitempty"`
 }
 
 // Instance is a runtime type representing a discovered Proxmox VM or LXC.
