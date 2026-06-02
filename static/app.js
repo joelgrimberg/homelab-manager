@@ -395,9 +395,11 @@
 
     if (active) {
       snoozeCard.hidden = false;
-      let cancelLabel = "Resume schedule";
       const deferred = active.deferred_fire_at ? new Date(active.deferred_fire_at) : null;
-      if (deferred && deferred > new Date()) {
+      const isPostpone = deferred && deferred > new Date();
+
+      let cancelLabel = "Resume schedule";
+      if (isPostpone) {
         snoozeLabel.textContent = "Sleep deferred to " + fmtTime(active.deferred_fire_at);
         // Mirror the server's cancel logic: when today's cron is still
         // ahead, cancel clears the snooze and the regular cron fires
@@ -414,8 +416,16 @@
       } else {
         snoozeLabel.textContent = "Skipping tonight";
       }
+
+      // Only show +30 min in postpone mode. In skip-tonight mode, the
+      // only sensible action is to undo the skip — adding +30 there
+      // would silently convert a skip into a postpone, which doesn't
+      // match what the label promises.
+      const extendBtn = isPostpone
+        ? '<button type="button" class="push-btn" data-mode="30">+30 min</button>'
+        : '';
       snoozeActions.innerHTML =
-        '<button type="button" class="push-btn" data-mode="30">+30 min</button>' +
+        extendBtn +
         '<button type="button" class="push-btn push-btn-secondary" id="snooze-cancel-btn">' + cancelLabel + '</button>';
       document.getElementById("snooze-cancel-btn").addEventListener("click", cancelSnooze);
       snoozeActions.querySelectorAll("button[data-mode]").forEach((btn) => {
