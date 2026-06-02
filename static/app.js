@@ -395,15 +395,28 @@
 
     if (active) {
       snoozeCard.hidden = false;
-      if (active.deferred_fire_at &&
-          new Date(active.deferred_fire_at) > new Date()) {
+      let cancelLabel = "Resume schedule";
+      const deferred = active.deferred_fire_at ? new Date(active.deferred_fire_at) : null;
+      if (deferred && deferred > new Date()) {
         snoozeLabel.textContent = "Sleep deferred to " + fmtTime(active.deferred_fire_at);
+        // Mirror the server's cancel logic: when today's cron is still
+        // ahead, cancel clears the snooze and the regular cron fires
+        // later; when today's cron has already passed, cancel fires
+        // sleep immediately. Preview the outcome in the label.
+        const nextCron = nextSleep ? new Date(nextSleep) : null;
+        if (nextCron && nextCron > deferred) {
+          cancelLabel = "Sleep now";
+        } else if (nextCron) {
+          cancelLabel = "Sleep at " + fmtTime(nextSleep);
+        } else {
+          cancelLabel = "Sleep now";
+        }
       } else {
         snoozeLabel.textContent = "Skipping tonight";
       }
       snoozeActions.innerHTML =
         '<button type="button" class="push-btn" data-mode="30">+30 min</button>' +
-        '<button type="button" class="push-btn push-btn-secondary" id="snooze-cancel-btn">Cancel</button>';
+        '<button type="button" class="push-btn push-btn-secondary" id="snooze-cancel-btn">' + cancelLabel + '</button>';
       document.getElementById("snooze-cancel-btn").addEventListener("click", cancelSnooze);
       snoozeActions.querySelectorAll("button[data-mode]").forEach((btn) => {
         btn.addEventListener("click", () => snoozeAction(btn.dataset.mode));
