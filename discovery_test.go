@@ -23,7 +23,7 @@ func TestDiscoverInstances(t *testing.T) {
 		{Tag: "control-plane", Tier: 2, Name: "control-plane"},
 	}
 
-	instances, tierNames, err := DiscoverInstances(mock, tierDefs)
+	instances, tierNames, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("DiscoverInstances() error: %v", err)
 	}
@@ -61,6 +61,55 @@ func TestDiscoverInstances(t *testing.T) {
 	}
 }
 
+func TestDiscoverInstancesFallbackHost(t *testing.T) {
+	primary := &mockProxmox{
+		vms: []ProxmoxInstance{
+			{VMID: 100, Name: "dns-primary", Status: "running", Tags: "infra", Type: "qemu"},
+		},
+	}
+	fallback := &mockProxmox{
+		vms: []ProxmoxInstance{
+			{VMID: 303, Name: "dns-secondary", Status: "running", Tags: "infra", Type: "qemu"},
+		},
+	}
+	tierDefs := []TierConfig{{Tag: "infra", Tier: 1, Name: "infra"}}
+
+	fbSources := []FallbackSource{
+		{Name: "pxmx", Client: fallback, TierName: "fallback", TierNum: 99},
+	}
+	instances, tierNames, err := DiscoverInstances(primary, fbSources, tierDefs)
+	if err != nil {
+		t.Fatalf("DiscoverInstances() error: %v", err)
+	}
+
+	if len(instances) != 2 {
+		t.Fatalf("got %d instances, want 2", len(instances))
+	}
+	if tierNames[99] != "fallback" {
+		t.Errorf("tierNames[99] = %q, want fallback", tierNames[99])
+	}
+
+	var primaryInst, fallbackInst *Instance
+	for i := range instances {
+		if instances[i].VMID == 100 {
+			primaryInst = &instances[i]
+		}
+		if instances[i].VMID == 303 {
+			fallbackInst = &instances[i]
+		}
+	}
+	if primaryInst == nil || fallbackInst == nil {
+		t.Fatal("missing primary or fallback instance")
+	}
+	if primaryInst.Source != "" || primaryInst.Protected {
+		t.Errorf("primary inst: Source=%q Protected=%v, want empty/false", primaryInst.Source, primaryInst.Protected)
+	}
+	if fallbackInst.Source != "pxmx" || !fallbackInst.Protected || fallbackInst.Tier != 99 {
+		t.Errorf("fallback inst: Source=%q Protected=%v Tier=%d, want pxmx/true/99",
+			fallbackInst.Source, fallbackInst.Protected, fallbackInst.Tier)
+	}
+}
+
 func TestDiscoverInstancesNoMatches(t *testing.T) {
 	mock := &mockProxmox{
 		statuses: map[int]string{},
@@ -73,7 +122,7 @@ func TestDiscoverInstancesNoMatches(t *testing.T) {
 		{Tag: "infra", Tier: 1, Name: "infra"},
 	}
 
-	instances, _, err := DiscoverInstances(mock, tierDefs)
+	instances, _, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("DiscoverInstances() error: %v", err)
 	}
@@ -95,7 +144,7 @@ func TestDiscoverInstancesSemicolonTags(t *testing.T) {
 		{Tag: "infra", Tier: 1, Name: "infra"},
 	}
 
-	instances, _, err := DiscoverInstances(mock, tierDefs)
+	instances, _, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("DiscoverInstances() error: %v", err)
 	}
@@ -120,7 +169,7 @@ func TestDiscoverInstancesCommaSeparated(t *testing.T) {
 		{Tag: "infra", Tier: 1, Name: "infra"},
 	}
 
-	instances, _, err := DiscoverInstances(mock, tierDefs)
+	instances, _, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("DiscoverInstances() error: %v", err)
 	}
@@ -150,7 +199,7 @@ func TestDiscoverInstancesMultiTag(t *testing.T) {
 			"machine-request.homelab-workers",
 		}},
 	}
-	instances, _, err := DiscoverInstances(mock, tierDefs)
+	instances, _, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("DiscoverInstances() error: %v", err)
 	}

@@ -16,6 +16,28 @@ type ProxmoxConfig struct {
 	TokenSecret string `yaml:"token_secret"`
 }
 
+// ExtraProxmoxConfig describes a secondary Proxmox host whose VMs are
+// surfaced in the UI but never started/stopped by the orchestrator
+// ("fallback" hosts that stay up while the primary cluster sleeps).
+// All instances from one ExtraProxmoxConfig land in a single tier named
+// by TierName, with Protected=true.
+type ExtraProxmoxConfig struct {
+	URL         string `yaml:"url"`
+	Node        string `yaml:"node"`
+	TokenID     string `yaml:"token_id"`
+	TokenSecret string `yaml:"token_secret"`
+	TierName    string `yaml:"tier_name,omitempty"` // default: Node
+}
+
+func (e ExtraProxmoxConfig) ToProxmoxConfig() ProxmoxConfig {
+	return ProxmoxConfig{
+		URL:         e.URL,
+		Node:        e.Node,
+		TokenID:     e.TokenID,
+		TokenSecret: e.TokenSecret,
+	}
+}
+
 type TierConfig struct {
 	// Tag is the legacy single-tag form. Tags is the new multi-tag form
 	// used when a tier should match several different Proxmox tags (for
@@ -70,21 +92,27 @@ type ScheduleEntry struct {
 }
 
 // Instance is a runtime type representing a discovered Proxmox VM or LXC.
+// Source identifies which Proxmox host owns the instance; empty means the
+// primary host. Protected instances are never started or stopped by the
+// orchestrator (used for fallback hosts and never_touch-tagged VMs).
 type Instance struct {
-	VMID int
-	Name string
-	Type string // "qemu" or "lxc"
-	Tier int
-	Tags []string
+	VMID      int
+	Name      string
+	Type      string // "qemu" or "lxc"
+	Tier      int
+	Tags      []string
+	Source    string // host name, e.g. "pxmx"; empty for primary
+	Protected bool   // never started or stopped by orchestrator
 }
 
 type Config struct {
-	Proxmox        ProxmoxConfig   `yaml:"proxmox"`
-	TierDefs       []TierConfig    `yaml:"tiers"`
-	NightMode      NightModeConfig `yaml:"night_mode"`
-	NeverTouchTags []string        `yaml:"never_touch_tags"`
-	WebPush        WebPushConfig   `yaml:"web_push"`
-	Schedule       []ScheduleEntry `yaml:"schedule"`
+	Proxmox        ProxmoxConfig        `yaml:"proxmox"`
+	ExtraProxmox   []ExtraProxmoxConfig `yaml:"extra_proxmox,omitempty"`
+	TierDefs       []TierConfig         `yaml:"tiers"`
+	NightMode      NightModeConfig      `yaml:"night_mode"`
+	NeverTouchTags []string             `yaml:"never_touch_tags"`
+	WebPush        WebPushConfig        `yaml:"web_push"`
+	Schedule       []ScheduleEntry      `yaml:"schedule"`
 }
 
 func LoadConfig(path string) (*Config, error) {

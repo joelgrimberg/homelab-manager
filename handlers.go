@@ -21,6 +21,7 @@ type InstanceStatus struct {
 	Status    string `json:"status"`
 	Protected bool   `json:"protected,omitempty"` // never_touch — UI shows lock, refuses stop
 	Stuck     bool   `json:"stuck,omitempty"`     // didn't reach target during last transition
+	Source    string `json:"source,omitempty"`    // fallback host name; empty for primary
 }
 
 // TierStatus is the JSON representation of a tier group.
@@ -58,6 +59,12 @@ type Orchestrator struct {
 	keepAwakeTags  []string // night-mode exempt tags (empty = unconfigured)
 	neverTouchTags []string // never_touch — these are never started or stopped
 	client         ProxmoxAPI
+
+	// Multi-host: fallback Proxmox sources. The primary is `client`.
+	// Instances carrying a non-empty Source are routed via fallbackClients.
+	// fallbackSources is used by Refresh to re-discover from all hosts.
+	fallbackClients map[string]ProxmoxAPI
+	fallbackSources []FallbackSource
 
 	// Inter-tier stabilization delays. Overridable for tests.
 	wakeTierDelay  time.Duration
@@ -106,15 +113,16 @@ type ProxmoxAPI interface {
 
 func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []TierConfig, keepAwakeTags []string, neverTouchTags []string, client ProxmoxAPI) *Orchestrator {
 	o := &Orchestrator{
-		tierDefs:       tierDefs,
-		keepAwakeTags:  keepAwakeTags,
-		neverTouchTags: neverTouchTags,
-		client:         client,
-		wakeTierDelay:  10 * time.Second,
-		sleepTierDelay: 5 * time.Second,
-		waitTimeout:    240 * time.Second,
-		verifyTimeout:  60 * time.Second,
-		pollInterval:   3 * time.Second,
+		tierDefs:         tierDefs,
+		keepAwakeTags:    keepAwakeTags,
+		neverTouchTags:   neverTouchTags,
+		client:           client,
+		fallbackClients:  map[string]ProxmoxAPI{},
+		wakeTierDelay:    10 * time.Second,
+		sleepTierDelay:   5 * time.Second,
+		waitTimeout:      240 * time.Second,
+		verifyTimeout:    60 * time.Second,
+		pollInterval:     3 * time.Second,
 	}
 	o.state.Store(&discoveryState{instances: instances, tierNames: tierNames})
 	empty := map[int]bool{}
@@ -122,9 +130,36 @@ func NewOrchestrator(instances []Instance, tierNames map[int]string, tierDefs []
 	return o
 }
 
-// isNeverTouch reports whether the instance carries a never_touch tag.
-// Such instances are excluded from every start and stop the orchestrator issues.
+// AttachFallback registers a secondary Proxmox source. After this, any
+// instance with Source==name in the discovery state will have its
+// GetStatus/Start/Stop calls routed to client instead of the primary.
+// Also enables periodic Refresh to discover from this source.
+func (o *Orchestrator) AttachFallback(src FallbackSource) {
+	if o.fallbackClients == nil {
+		o.fallbackClients = map[string]ProxmoxAPI{}
+	}
+	o.fallbackClients[src.Name] = src.Client
+	o.fallbackSources = append(o.fallbackSources, src)
+}
+
+// clientFor returns the ProxmoxAPI that owns inst — the matching fallback
+// client when inst.Source identifies one, else the primary.
+func (o *Orchestrator) clientFor(inst Instance) ProxmoxAPI {
+	if inst.Source != "" {
+		if c, ok := o.fallbackClients[inst.Source]; ok {
+			return c
+		}
+	}
+	return o.client
+}
+
+// isNeverTouch reports whether the orchestrator must skip this instance.
+// True when the instance carries a never_touch tag OR has Protected=true
+// (used by fallback-host instances).
 func (o *Orchestrator) isNeverTouch(inst Instance) bool {
+	if inst.Protected {
+		return true
+	}
 	if len(o.neverTouchTags) == 0 {
 		return false
 	}
@@ -165,7 +200,7 @@ func (o *Orchestrator) Refresh() error {
 		return nil
 	}
 
-	instances, tierNames, err := DiscoverInstances(o.client, o.tierDefs)
+	instances, tierNames, err := DiscoverInstances(o.client, o.fallbackSources, o.tierDefs)
 	if err != nil {
 		return err
 	}
@@ -296,7 +331,7 @@ func (o *Orchestrator) Status() StatusResponse {
 		statuses := make([]InstanceStatus, 0, len(instances))
 
 		for _, inst := range instances {
-			status, err := o.client.GetStatus(inst)
+			status, err := o.clientFor(inst).GetStatus(inst)
 			if err != nil {
 				log.Printf("error getting status for %s (%d): %v", inst.Name, inst.VMID, err)
 				status = "unknown"
@@ -308,6 +343,7 @@ func (o *Orchestrator) Status() StatusResponse {
 				Status:    status,
 				Protected: o.isNeverTouch(inst),
 				Stuck:     stuckSet[inst.VMID],
+				Source:    inst.Source,
 			})
 		}
 
@@ -568,9 +604,9 @@ func (o *Orchestrator) processSubset(instances []Instance, action string) {
 			})
 			var err error
 			if action == "start" {
-				err = o.client.Start(inst)
+				err = o.clientFor(inst).Start(inst)
 			} else {
-				err = o.client.Stop(inst)
+				err = o.clientFor(inst).Stop(inst)
 			}
 			if err != nil {
 				log.Printf("error %sing %s (%d): %v", action, inst.Name, inst.VMID, err)
@@ -615,9 +651,9 @@ func (o *Orchestrator) doTierTransition(tier int, instances []Instance, action s
 	for _, inst := range instances {
 		var err error
 		if action == "start" {
-			err = o.client.Start(inst)
+			err = o.clientFor(inst).Start(inst)
 		} else {
-			err = o.client.Stop(inst)
+			err = o.clientFor(inst).Stop(inst)
 		}
 		if err != nil {
 			log.Printf("error %s %s (%d): %v", verb, inst.Name, inst.VMID, err)
@@ -639,7 +675,7 @@ func (o *Orchestrator) waitForStateWithTimeout(instances []Instance, target stri
 	for time.Now().Before(deadline) {
 		allReady := true
 		for _, inst := range instances {
-			status, err := o.client.GetStatus(inst)
+			status, err := o.clientFor(inst).GetStatus(inst)
 			if err != nil {
 				allReady = false
 				continue
@@ -666,7 +702,7 @@ func (o *Orchestrator) verifySubset(instances []Instance, target string) []int {
 	}
 	var laggards []Instance
 	for _, inst := range instances {
-		status, err := o.client.GetStatus(inst)
+		status, err := o.clientFor(inst).GetStatus(inst)
 		if err != nil {
 			log.Printf("verify: error getting status for %s (%d): %v", inst.Name, inst.VMID, err)
 			laggards = append(laggards, inst)
@@ -688,9 +724,9 @@ func (o *Orchestrator) verifySubset(instances []Instance, target string) []int {
 		log.Printf("verify: re-%s %s (%d)", verb, inst.Name, inst.VMID)
 		var err error
 		if target == "running" {
-			err = o.client.Start(inst)
+			err = o.clientFor(inst).Start(inst)
 		} else {
-			err = o.client.Stop(inst)
+			err = o.clientFor(inst).Stop(inst)
 		}
 		if err != nil {
 			log.Printf("verify: error %s %s (%d): %v", verb, inst.Name, inst.VMID, err)
@@ -701,7 +737,7 @@ func (o *Orchestrator) verifySubset(instances []Instance, target string) []int {
 
 	var stuck []int
 	for _, inst := range laggards {
-		status, err := o.client.GetStatus(inst)
+		status, err := o.clientFor(inst).GetStatus(inst)
 		if err != nil || status != target {
 			stuck = append(stuck, inst.VMID)
 			log.Printf("verify: %s (%d) still not %s", inst.Name, inst.VMID, target)
@@ -878,9 +914,9 @@ func (o *Orchestrator) HandleInstanceAction(w http.ResponseWriter, r *http.Reque
 	}
 
 	if action == "start" {
-		err = o.client.Start(*inst)
+		err = o.clientFor(*inst).Start(*inst)
 	} else {
-		err = o.client.Stop(*inst)
+		err = o.clientFor(*inst).Stop(*inst)
 	}
 
 	if err != nil {

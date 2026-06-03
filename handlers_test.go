@@ -187,7 +187,7 @@ func TestRefreshReplacesDiscovery(t *testing.T) {
 		},
 	}
 	tierDefs := []TierConfig{{Tag: "infra", Tier: 1, Name: "infra"}}
-	instances, tierNames, err := DiscoverInstances(mock, tierDefs)
+	instances, tierNames, err := DiscoverInstances(mock, nil, tierDefs)
 	if err != nil {
 		t.Fatalf("initial discovery: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestRefreshSkippedDuringTransition(t *testing.T) {
 		},
 	}
 	tierDefs := []TierConfig{{Tag: "infra", Tier: 1, Name: "infra"}}
-	instances, tierNames, _ := DiscoverInstances(mock, tierDefs)
+	instances, tierNames, _ := DiscoverInstances(mock, nil, tierDefs)
 	orch := NewOrchestrator(instances, tierNames, tierDefs, nil, nil, mock)
 
 	if started, _ := orch.SleepTier(1); !started {

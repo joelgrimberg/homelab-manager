@@ -206,13 +206,21 @@
       });
     }
 
-    // Collect protected instances across every tier — they go in their
-    // own "Always on" card above the tier list since they're locked
-    // (never_touch) and don't participate in any transition.
+    // Collect protected instances across every tier. Primary-host
+    // protected instances go into the "Always on" card; fallback-host
+    // instances (Source != "") go into a separate "Fallback" card so
+    // it's visually clear those live on a different Proxmox.
     var alwaysOn = [];
+    var fallbackByHost = {};
     tiers.forEach(function (tier) {
       tier.instances.forEach(function (inst) {
-        if (inst.protected) alwaysOn.push(inst);
+        if (!inst.protected) return;
+        if (inst.source) {
+          if (!fallbackByHost[inst.source]) fallbackByHost[inst.source] = [];
+          fallbackByHost[inst.source].push(inst);
+        } else {
+          alwaysOn.push(inst);
+        }
       });
     });
 
@@ -230,8 +238,21 @@
       html += "</div></div>";
     }
 
+    Object.keys(fallbackByHost).sort().forEach(function (host) {
+      html += '<div class="always-on-card fallback-card">';
+      html += '<div class="always-on-header">';
+      html += '<span class="always-on-title">Fallback</span>';
+      html += '<span class="fallback-host">' + escapeHtml(host) + '</span>';
+      html += "</div>";
+      html += '<div class="always-on-instances">';
+      fallbackByHost[host].forEach(function (inst) {
+        html += renderInstanceRow(inst, null);
+      });
+      html += "</div></div>";
+    });
+
     tiers.forEach(function (tier) {
-      // Skip protected instances — they're already in the Always-on card.
+      // Skip protected instances — they're already in Always-on / Fallback cards.
       var instances = tier.instances.filter(function (inst) { return !inst.protected; });
       if (instances.length === 0) return;
 

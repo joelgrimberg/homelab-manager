@@ -72,13 +72,40 @@ func cmdServe(args []string) {
 
 	client := NewProxmoxClient(cfg.Proxmox)
 
-	instances, tierNames, err := DiscoverInstances(client, cfg.TierDefs)
+	// Build fallback sources. Each extra Proxmox host gets the next
+	// available tier number after the primary tier defs, so they don't
+	// clash with the tag-matched tiers.
+	maxTier := 0
+	for _, td := range cfg.TierDefs {
+		if td.Tier > maxTier {
+			maxTier = td.Tier
+		}
+	}
+	fallbacks := make([]FallbackSource, 0, len(cfg.ExtraProxmox))
+	for i, extra := range cfg.ExtraProxmox {
+		name := extra.Node
+		tierName := extra.TierName
+		if tierName == "" {
+			tierName = name
+		}
+		fallbacks = append(fallbacks, FallbackSource{
+			Name:     name,
+			Client:   NewProxmoxClient(extra.ToProxmoxConfig()),
+			TierName: tierName,
+			TierNum:  maxTier + 1 + i,
+		})
+	}
+
+	instances, tierNames, err := DiscoverInstances(client, fallbacks, cfg.TierDefs)
 	if err != nil {
 		log.Fatalf("failed to discover instances: %v", err)
 	}
 	log.Printf("discovered %d instances across %d tiers", len(instances), len(tierNames))
 
 	orch := NewOrchestrator(instances, tierNames, cfg.TierDefs, cfg.NightMode.KeepAwakeTags, cfg.NeverTouchTags, client)
+	for _, fb := range fallbacks {
+		orch.AttachFallback(fb)
+	}
 	go orch.RunRefreshLoop(context.Background(), 60*time.Second)
 
 	pm, err := NewPushManager(filepath.Join(*stateDir, "subscriptions.json"), cfg.WebPush)

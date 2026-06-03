@@ -6,17 +6,61 @@ import (
 	"strings"
 )
 
-// DiscoverInstances queries Proxmox for all VMs and LXCs, then matches
-// them to tier definitions by tag. Returns the discovered instances and
-// a tier number → name map.
-func DiscoverInstances(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, map[int]string, error) {
+// FallbackSource describes a secondary Proxmox host whose instances are
+// all surfaced as Protected and assigned to a single shared tier (named
+// by TierName, numbered by TierNum). Used for "fallback" hosts that
+// stay up while the primary cluster sleeps.
+type FallbackSource struct {
+	Name     string // host identifier — written to Instance.Source
+	Client   ProxmoxAPI
+	TierName string
+	TierNum  int
+}
+
+// DiscoverInstances queries Proxmox for all VMs and LXCs on the primary
+// host, then on each fallback host, and merges the results. Primary-host
+// instances are matched to tier definitions by tag. Fallback-host
+// instances bypass tag matching and land in a single tier per source,
+// marked Protected so the orchestrator never starts or stops them.
+func DiscoverInstances(primary ProxmoxAPI, fallbacks []FallbackSource, tierDefs []TierConfig) ([]Instance, map[int]string, error) {
+	instances, err := discoverPrimary(primary, tierDefs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tierNames := make(map[int]string, len(tierDefs)+len(fallbacks))
+	for _, td := range tierDefs {
+		tierNames[td.Tier] = td.Name
+	}
+
+	for _, fb := range fallbacks {
+		fbInstances, err := discoverFallback(fb)
+		if err != nil {
+			return nil, nil, fmt.Errorf("fallback %q: %w", fb.Name, err)
+		}
+		instances = append(instances, fbInstances...)
+		tierNames[fb.TierNum] = fb.TierName
+	}
+
+	// Sort by tier, then VMID for stable ordering
+	sort.Slice(instances, func(i, j int) bool {
+		if instances[i].Tier != instances[j].Tier {
+			return instances[i].Tier < instances[j].Tier
+		}
+		return instances[i].VMID < instances[j].VMID
+	})
+
+	return instances, tierNames, nil
+}
+
+func discoverPrimary(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, error) {
 	vms, err := client.ListVMs()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing VMs: %w", err)
+		return nil, fmt.Errorf("listing VMs: %w", err)
 	}
 	lxcs, err := client.ListLXCs()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing LXCs: %w", err)
+		return nil, fmt.Errorf("listing LXCs: %w", err)
 	}
 
 	// Build tag → tier definition lookup. Each tier may match more than
@@ -56,20 +100,33 @@ func DiscoverInstances(client ProxmoxAPI, tierDefs []TierConfig) ([]Instance, ma
 		}
 	}
 
-	// Sort by tier, then VMID for stable ordering
-	sort.Slice(instances, func(i, j int) bool {
-		if instances[i].Tier != instances[j].Tier {
-			return instances[i].Tier < instances[j].Tier
-		}
-		return instances[i].VMID < instances[j].VMID
-	})
+	return instances, nil
+}
 
-	tierNames := make(map[int]string, len(tierDefs))
-	for _, td := range tierDefs {
-		tierNames[td.Tier] = td.Name
+func discoverFallback(fb FallbackSource) ([]Instance, error) {
+	vms, err := fb.Client.ListVMs()
+	if err != nil {
+		return nil, fmt.Errorf("listing VMs: %w", err)
+	}
+	lxcs, err := fb.Client.ListLXCs()
+	if err != nil {
+		return nil, fmt.Errorf("listing LXCs: %w", err)
 	}
 
-	return instances, tierNames, nil
+	all := append(vms, lxcs...)
+	instances := make([]Instance, 0, len(all))
+	for _, pi := range all {
+		instances = append(instances, Instance{
+			VMID:      pi.VMID,
+			Name:      pi.Name,
+			Type:      pi.Type,
+			Tier:      fb.TierNum,
+			Tags:      parseTags(pi.Tags),
+			Source:    fb.Name,
+			Protected: true,
+		})
+	}
+	return instances, nil
 }
 
 // parseTags splits a Proxmox tags string (semicolon or comma-separated)
