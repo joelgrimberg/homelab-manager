@@ -31,8 +31,7 @@
 .snooze-card,
 .push-card,
 .schedule-card,
-.always-on-card,
-.instance-group {
+.always-on-card {
   background: var(--glass-bg);
   backdrop-filter: blur(1px) saturate(180%);
   -webkit-backdrop-filter: blur(1px) saturate(180%);
@@ -49,8 +48,7 @@
   .advanced-toggle,
   .snooze-card,
   .push-card,
-  .schedule-card,
-  .instance-group {
+  .schedule-card {
     background: var(--surface);
   }
 }
@@ -843,59 +841,45 @@ footer {
   margin-bottom: 20px;
 }
 
-/* Right pane (desktop only) — per-tier instance-controls groups. Visually
-   mirrors .always-on-card / .tier (glass card + 12px radius). */
-.instance-group {
-  border-radius: 12px;
-  margin-bottom: 18px;
-  overflow: hidden;
+/* Right pane (desktop only) — same unified blocks as mobile but always
+   expanded. Static tier header has no chevron and no click target, so
+   suppress the pointer cursor / press-state that the mobile rule adds. */
+.tier-header-static {
+  cursor: default;
 }
-.instance-group-header {
-  display: flex;
-  align-items: center;
-  padding: 14px 16px;
-  min-height: 54px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.instance-group-num {
-  color: var(--text);
-  margin-right: 6px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-.instance-group-rows .instance {
-  border-top: 1px solid var(--separator);
+.tier-header-static:active {
+  background: transparent;
 }
 
 /* Hidden by default; revealed in the desktop @media block below. */
 #instances-pane { display: none; }
 
-/* Desktop layout — two columns side by side. */
+/* Desktop layout — one container, two auto-balanced columns. With the
+   current data the browser lands Always-on + Fallback + Tier 1 on the
+   left and Tier 2 + Tier 3 on the right; if a tier grows or shrinks
+   the columns rebalance automatically. */
 @media (min-width: 1024px) {
   .container {
     max-width: 1100px;
   }
 
-  .main-grid {
-    display: grid;
-    grid-template-columns: minmax(340px, 1fr) minmax(420px, 1.3fr);
-    gap: 24px;
-    align-items: start;
+  /* The left summary pane is now redundant — every block exists as a
+     unified card in #instances-pane below. */
+  #tiers { display: none; }
+  .main-grid { display: block; }
+
+  #instances-pane {
+    display: block;
+    column-count: 2;
+    column-gap: 24px;
   }
-
-  #instances-pane { display: block; }
-
-  /* Left column: tier cards collapse to headers only. The non-protected
-     instance list lives in the right pane, so hide the inline one and the
-     expand/collapse chevron that toggles it. The always-on / fallback
-     cards keep their inline names — those protected instances aren't
-     mirrored on the right. */
-  #tiers .tier-instances { display: none; }
-  #tiers .tier-chevron { display: none; }
+  #instances-pane > * {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    /* Block-level margin-bottom doesn't collapse across column breaks;
+       margin-top would push the first item in the right column down. */
+    margin: 0 0 18px;
+  }
 
   /* The "Instance controls" master switch is meaningless on desktop —
      tier and instance toggles are always visible. */

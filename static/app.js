@@ -307,24 +307,72 @@
 
     tiersEl.innerHTML = html;
 
-    // Right pane (desktop): per-tier groups of non-protected instances with
-    // toggles. Protected instances stay in the always-on / fallback cards on
-    // the left so each VM appears exactly once. Hidden on mobile via CSS.
+    // Right pane (desktop): all blocks rendered as unified cards so the
+    // master tier toggle lives on the same header line as the VMs it
+    // controls. CSS then flows the cards into auto-balanced columns.
+    // Hidden on mobile via CSS — mobile uses #tiers above.
     var paneHtml = "";
+
+    if (alwaysOn.length > 0) {
+      paneHtml += '<div class="always-on-card">';
+      paneHtml += '<div class="always-on-header">';
+      paneHtml += '<span class="always-on-title">Always on</span>';
+      paneHtml += "</div>";
+      paneHtml += '<div class="always-on-instances">';
+      alwaysOn.forEach(function (inst) {
+        paneHtml += renderInstanceRow(inst, null);
+      });
+      paneHtml += "</div></div>";
+    }
+
+    Object.keys(fallbackByHost).sort().forEach(function (host) {
+      paneHtml += '<div class="always-on-card fallback-card">';
+      paneHtml += '<div class="always-on-header">';
+      paneHtml += '<span class="always-on-title">Fallback</span>';
+      paneHtml += '<span class="fallback-host">' + escapeHtml(host) + '</span>';
+      paneHtml += "</div>";
+      paneHtml += '<div class="always-on-instances">';
+      fallbackByHost[host].forEach(function (inst) {
+        paneHtml += renderInstanceRow(inst, null);
+      });
+      paneHtml += "</div></div>";
+    });
+
     tiers.forEach(function (tier) {
       var paneInstances = tier.instances.filter(function (inst) { return !inst.protected; });
       if (paneInstances.length === 0) return;
-      paneHtml += '<div class="instance-group" data-tier="' + tier.tier + '">';
-      paneHtml += '<div class="instance-group-header">';
-      paneHtml += '<span class="instance-group-num">Tier ' + tier.tier + '</span> ';
-      paneHtml += escapeHtml(tier.name);
+
+      var running = 0, stopped = 0;
+      paneInstances.forEach(function (inst) {
+        if (inst.status === "running") running++;
+        else if (inst.status === "stopped") stopped++;
+      });
+      var tierChecked = running > 0 && running >= stopped;
+      var tierDisabled = !!(currentState && currentState.transitioning);
+      var tierMixed = running > 0 && stopped > 0;
+
+      // No chevron, no click-to-collapse — always expanded so the master
+      // toggle and its VMs read as one block.
+      paneHtml += '<div class="tier expanded">';
+      paneHtml += '<div class="tier-header tier-header-static">';
+      paneHtml += '<span class="tier-title"><span class="tier-num">Tier ' + tier.tier + "</span> " + escapeHtml(tier.name);
+      if (tierMixed) paneHtml += ' <span class="tier-badge">mixed</span>';
+      paneHtml += "</span>";
+      paneHtml += '<span class="tier-header-right">';
+      paneHtml += '<label class="tier-toggle' + (tierDisabled ? " disabled" : "") + '">';
+      paneHtml += '<input type="checkbox"' + (tierChecked ? " checked" : "") + (tierDisabled ? " disabled" : "");
+      paneHtml += ' data-tier-num="' + tier.tier + '">';
+      paneHtml += '<span class="tier-slider"></span>';
+      paneHtml += "</label>";
+      paneHtml += "</span>";
       paneHtml += "</div>";
-      paneHtml += '<div class="instance-group-rows">';
+      paneHtml += '<div class="tier-instances">';
       paneInstances.forEach(function (inst) {
         paneHtml += renderInstanceRow(inst, tier.tier, true);
       });
       paneHtml += "</div></div>";
     });
+
     instancesPaneEl.innerHTML = paneHtml;
   }
 
