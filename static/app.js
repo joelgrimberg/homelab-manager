@@ -15,6 +15,7 @@
   const toggleInput = document.getElementById("mode-input");
   const spinner = document.getElementById("spinner");
   const tiersEl = document.getElementById("tiers");
+  const instancesPaneEl = document.getElementById("instances-pane");
   const lastUpdated = document.getElementById("last-updated");
   const labelAwake = document.getElementById("mode-label-awake");
   const labelNight = document.getElementById("mode-label-night");
@@ -58,6 +59,20 @@
     advancedMode = advancedInput.checked;
     if (currentState) renderTiers(currentState.tiers);
   });
+
+  // Desktop (>= 1024px) uses a two-column layout where the right pane is
+  // always-on. Force advancedMode so the left-column tier headers also show
+  // their wake/sleep toggle. On mobile the user controls it via the switch.
+  const desktopMql = window.matchMedia("(min-width: 1024px)");
+  function syncAdvancedToViewport() {
+    if (desktopMql.matches) {
+      advancedMode = true;
+      advancedInput.checked = true;
+    }
+    if (currentState) renderTiers(currentState.tiers);
+  }
+  desktopMql.addEventListener("change", syncAdvancedToViewport);
+  syncAdvancedToViewport();
 
   // The big toggle controls Night mode: ON = night (only exempt running),
   // OFF = awake. POSTs /api/night/sleep or /api/night/wake accordingly.
@@ -156,7 +171,7 @@
   // Render a single instance row. `tierNum` is the tier number for
   // transition-progress dot styling; pass null for always-on rows that
   // never participate in a tiered transition.
-  function renderInstanceRow(inst, tierNum) {
+  function renderInstanceRow(inst, tierNum, forceAdvanced) {
     var dotClass = inst.status;
     if (inst.status !== "running" && inst.status !== "stopped") {
       dotClass = "transitioning";
@@ -183,7 +198,7 @@
     if (inst.stuck) {
       html += '<span class="instance-warn" title="Did not reach target during last transition">&#9888;</span>';
     }
-    if (advancedMode && !inst.protected) {
+    if ((forceAdvanced || advancedMode) && !inst.protected) {
       var isRunning = inst.status === "running";
       var isStopped = inst.status === "stopped";
       var toggleDisabled = (currentState && currentState.transitioning) || (!isRunning && !isStopped);
@@ -291,6 +306,26 @@
     });
 
     tiersEl.innerHTML = html;
+
+    // Right pane (desktop): per-tier groups of non-protected instances with
+    // toggles. Protected instances stay in the always-on / fallback cards on
+    // the left so each VM appears exactly once. Hidden on mobile via CSS.
+    var paneHtml = "";
+    tiers.forEach(function (tier) {
+      var paneInstances = tier.instances.filter(function (inst) { return !inst.protected; });
+      if (paneInstances.length === 0) return;
+      paneHtml += '<div class="instance-group" data-tier="' + tier.tier + '">';
+      paneHtml += '<div class="instance-group-header">';
+      paneHtml += '<span class="instance-group-num">Tier ' + tier.tier + '</span> ';
+      paneHtml += escapeHtml(tier.name);
+      paneHtml += "</div>";
+      paneHtml += '<div class="instance-group-rows">';
+      paneInstances.forEach(function (inst) {
+        paneHtml += renderInstanceRow(inst, tier.tier, true);
+      });
+      paneHtml += "</div></div>";
+    });
+    instancesPaneEl.innerHTML = paneHtml;
   }
 
   window.toggleTier = function (tier) {
@@ -319,8 +354,9 @@
     if (el) el.remove();
   }
 
-  // Instance + tier toggle handler (event delegation)
-  tiersEl.addEventListener("change", function (e) {
+  // Instance + tier toggle handler (event delegation). Bound on both the
+  // left tier pane and the right instance-controls pane.
+  function handlePaneChange(e) {
     var input = e.target;
     if (!input.dataset) return;
 
@@ -332,7 +368,9 @@
       handleTierToggle(input);
       return;
     }
-  });
+  }
+  tiersEl.addEventListener("change", handlePaneChange);
+  instancesPaneEl.addEventListener("change", handlePaneChange);
 
   function handleInstanceToggle(input) {
     var vmid = input.dataset.vmid;
