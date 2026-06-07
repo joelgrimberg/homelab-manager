@@ -789,6 +789,21 @@ h1 {
   color: var(--text);
 }
 
+/* Section divider inside the schedule card — "Global", "Tier 1 · infra", … */
+.schedule-section-label {
+  padding: 12px 16px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  border-bottom: 1px solid var(--separator);
+  background: rgba(255, 255, 255, 0.03);
+}
+.schedule-section-label:first-child {
+  padding-top: 14px;
+}
+
 .schedule-row-time {
   appearance: none;
   background: var(--surface-2);

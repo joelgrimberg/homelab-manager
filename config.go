@@ -200,6 +200,75 @@ func upsertMapKey(mapping *yaml.Node, key string, value *yaml.Node) {
 	mapping.Content = append(mapping.Content, keyNode, value)
 }
 
+// WriteTierScheduleToConfig replaces the `schedule:` subkey on a specific
+// tier in config.yaml. Finds the tier by its numeric `tier:` field. Other
+// tiers, the top-level `schedule:`, and other sections are preserved.
+// Removing all entries (nil/empty slice) drops the subkey on that tier.
+func WriteTierScheduleToConfig(path string, tier int, entries []ScheduleEntry) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("config root is not a mapping")
+	}
+	doc := root.Content[0]
+
+	tiersNode := mapValue(doc, "tiers")
+	if tiersNode == nil || tiersNode.Kind != yaml.SequenceNode {
+		return fmt.Errorf("tiers: missing or not a sequence")
+	}
+
+	for _, item := range tiersNode.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		tn := mapValue(item, "tier")
+		if tn == nil || tn.Value != fmt.Sprintf("%d", tier) {
+			continue
+		}
+		if len(entries) == 0 {
+			deleteMapKey(item, "schedule")
+		} else {
+			var schedNode yaml.Node
+			if err := schedNode.Encode(entries); err != nil {
+				return err
+			}
+			upsertMapKey(item, "schedule", &schedNode)
+		}
+		out, err := yaml.Marshal(&root)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, out, 0o600)
+	}
+	return fmt.Errorf("tier %d not found in config", tier)
+}
+
+// mapValue returns the value node for `key` in a mapping, or nil if absent.
+func mapValue(mapping *yaml.Node, key string) *yaml.Node {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// deleteMapKey removes a key (and its value) from a yaml mapping node.
+func deleteMapKey(mapping *yaml.Node, key string) {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content = append(mapping.Content[:i], mapping.Content[i+2:]...)
+			return
+		}
+	}
+}
+
 // WriteScheduleToConfig replaces the `schedule:` section in config.yaml
 // with the given entries, preserving the rest of the file.
 func WriteScheduleToConfig(path string, entries []ScheduleEntry) error {

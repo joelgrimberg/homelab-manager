@@ -85,6 +85,39 @@ func (s *Scheduler) Reload(global []ScheduleEntry) error {
 	return s.rebuild(global, perTier)
 }
 
+// ReplaceTierSchedule swaps a single tier's entries while preserving the
+// global list and every other tier. Used by PUT /api/tiers/{n}/schedule.
+// Passing nil or an empty slice removes the tier's schedule entirely.
+func (s *Scheduler) ReplaceTierSchedule(tier int, entries []ScheduleEntry) error {
+	s.mu.Lock()
+	global := s.global
+	perTier := clonePerTier(s.perTier)
+	s.mu.Unlock()
+	if perTier == nil {
+		perTier = map[int][]ScheduleEntry{}
+	}
+	if len(entries) == 0 {
+		delete(perTier, tier)
+	} else {
+		perTier[tier] = entries
+	}
+	return s.rebuild(global, perTier)
+}
+
+// TierSchedule returns a copy of the entries currently registered for a
+// tier. Returns nil if the tier has no entries.
+func (s *Scheduler) TierSchedule(tier int) []ScheduleEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.perTier[tier]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]ScheduleEntry, len(src))
+	copy(out, src)
+	return out
+}
+
 // rebuild flattens global + per-tier entries into a single scoped list,
 // validates every cron expression and action before swapping; on any
 // error the previous schedule stays active.

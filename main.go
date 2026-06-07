@@ -129,7 +129,7 @@ func cmdServe(args []string) {
 	if err := sched.Start(cfg.Schedule, tierSchedules); err != nil {
 		log.Fatalf("scheduler start: %v", err)
 	}
-	schedHandler := NewScheduleHandler(sched, *configPath)
+	schedHandler := NewScheduleHandler(sched, *configPath, cfg.TierDefs)
 	snoozeHandler := NewSnoozeHandler(snooze, sched, orch, pm)
 
 	hub := NewEventHub()
@@ -194,6 +194,8 @@ func cmdServe(args []string) {
 	mux.HandleFunc("/api/push/unsubscribe", pm.HandlePushUnsubscribe)
 	mux.HandleFunc("/api/push/test", pm.HandlePushTest)
 	mux.HandleFunc("/api/schedule", schedHandler.Handle)
+	mux.HandleFunc("/api/schedules", schedHandler.HandleAggregate)
+	mux.HandleFunc("/api/tiers/", schedHandler.HandleTier)
 	mux.HandleFunc("/api/snooze", snoozeHandler.Handle)
 	mux.HandleFunc("/api/events", eventsHandler.Handle)
 

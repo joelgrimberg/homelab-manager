@@ -36,7 +36,9 @@
   const settingsOpenBtn = document.getElementById("settings-open-btn");
   const settingsCloseBtn = document.getElementById("settings-close-btn");
 
-  let scheduleEntries = [];
+  // scheduleData mirrors the aggregator response from /api/schedules:
+  // { global: [...], tiers: [{tier, name, schedule: [...]}, ...] }.
+  let scheduleData = { global: [], tiers: [] };
 
   function showSettings() {
     headerMain.hidden = true;
@@ -44,7 +46,7 @@
     headerSettings.hidden = false;
     viewSettings.hidden = false;
     // Lazy-load schedule on first open.
-    if (scheduleEntries.length === 0) loadSchedule();
+    if (scheduleData.global.length === 0 && scheduleData.tiers.length === 0) loadSchedule();
   }
   function showMain() {
     headerSettings.hidden = true;
@@ -739,9 +741,13 @@
 
   async function loadSchedule() {
     try {
-      const resp = await fetch("/api/schedule");
+      const resp = await fetch("/api/schedules");
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      scheduleEntries = await resp.json();
+      const data = await resp.json();
+      scheduleData = {
+        global: Array.isArray(data.global) ? data.global : [],
+        tiers: Array.isArray(data.tiers) ? data.tiers : [],
+      };
       renderSchedule();
     } catch (err) {
       console.error(err);
@@ -749,20 +755,38 @@
     }
   }
 
-  function renderSchedule() {
-    let html = "";
-    scheduleEntries.forEach((entry, idx) => {
+  // Pointer to a single entry across sections — group is "global" or
+  // "tier-<n>", idx is the position within that group's array. Encoded on
+  // each row's <input data-group="..." data-idx="..."> so the change
+  // listener can mutate the right object.
+  function renderScheduleSection(label, group, entries) {
+    if (!entries || entries.length === 0) return "";
+    let html = `<div class="schedule-section-label">${escapeHtml(label)}</div>`;
+    entries.forEach((entry, idx) => {
       const t = cronToTime(entry.cron);
       const isDaily = t !== null;
       html += `<div class="schedule-row${isDaily ? "" : " advanced"}">`;
       html += `<span class="schedule-row-label">${escapeHtml(entry.name || "(unnamed)")}</span>`;
       if (isDaily) {
-        html += `<input type="time" class="schedule-row-time" data-idx="${idx}" value="${t}">`;
+        html += `<input type="time" class="schedule-row-time" data-group="${group}" data-idx="${idx}" value="${t}">`;
       } else {
-        html += `<input type="text" class="schedule-row-time" data-idx="${idx}" value="${escapeHtml(entry.cron)}">`;
+        html += `<input type="text" class="schedule-row-time" data-group="${group}" data-idx="${idx}" value="${escapeHtml(entry.cron)}">`;
       }
       html += `</div>`;
     });
+    return html;
+  }
+
+  function renderSchedule() {
+    let html = "";
+    html += renderScheduleSection("Global", "global", scheduleData.global);
+    scheduleData.tiers.forEach((t) => {
+      const label = `Tier ${t.tier} · ${t.name}`;
+      html += renderScheduleSection(label, `tier-${t.tier}`, t.schedule);
+    });
+    if (!html) {
+      html = `<div class="schedule-section-label">No schedule entries configured.</div>`;
+    }
     html += `<div class="schedule-save">`;
     html += `<span class="schedule-status" id="schedule-status"></span>`;
     html += `<button type="button" class="push-btn" id="schedule-save-btn">Save</button>`;
@@ -771,43 +795,74 @@
 
     scheduleBody.querySelectorAll(".schedule-row-time").forEach((el) => {
       el.addEventListener("change", (e) => {
+        const group = e.target.dataset.group;
         const idx = parseInt(e.target.dataset.idx, 10);
         const val = e.target.value;
         const isDaily = e.target.type === "time";
+        const target = entryAt(group, idx);
+        if (!target) return;
         if (isDaily) {
           const cron = timeToCron(val);
-          if (cron) scheduleEntries[idx].cron = cron;
+          if (cron) target.cron = cron;
         } else {
-          scheduleEntries[idx].cron = val;
+          target.cron = val;
         }
       });
     });
+
     const saveBtn = document.getElementById("schedule-save-btn");
-    saveBtn.addEventListener("click", async () => {
-      const statusEl = document.getElementById("schedule-status");
-      saveBtn.disabled = true;
-      statusEl.textContent = "Saving…";
+    saveBtn.addEventListener("click", saveSchedule);
+  }
+
+  function entryAt(group, idx) {
+    if (group === "global") return scheduleData.global[idx];
+    const m = /^tier-(\d+)$/.exec(group);
+    if (!m) return null;
+    const tn = parseInt(m[1], 10);
+    const t = scheduleData.tiers.find((x) => x.tier === tn);
+    return t ? t.schedule[idx] : null;
+  }
+
+  async function saveSchedule() {
+    const saveBtn = document.getElementById("schedule-save-btn");
+    const statusEl = document.getElementById("schedule-status");
+    saveBtn.disabled = true;
+    statusEl.textContent = "Saving…";
+    const requests = [
+      { url: "/api/schedule", body: scheduleData.global, label: "global" },
+    ];
+    scheduleData.tiers.forEach((t) => {
+      // Only PUT tiers that had entries — empty PUT would clear server-side.
+      if (t.schedule && t.schedule.length > 0) {
+        requests.push({ url: `/api/tiers/${t.tier}/schedule`, body: t.schedule, label: `tier ${t.tier}` });
+      }
+    });
+    const failed = [];
+    for (const req of requests) {
       try {
-        const resp = await fetch("/api/schedule", {
+        const resp = await fetch(req.url, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(scheduleEntries),
+          body: JSON.stringify(req.body),
         });
         if (!resp.ok) {
           const t = await resp.text();
           throw new Error(t || ("HTTP " + resp.status));
         }
-        scheduleEntries = await resp.json();
-        renderSchedule();
-        const s = document.getElementById("schedule-status");
-        if (s) s.textContent = "Saved.";
       } catch (err) {
-        console.error(err);
-        statusEl.textContent = "Save failed: " + err.message;
-      } finally {
-        saveBtn.disabled = false;
+        console.error(req.label, err);
+        failed.push(`${req.label}: ${err.message}`);
       }
-    });
+    }
+    if (failed.length === 0) {
+      // Local scheduleData already matches what the server now holds (each
+      // PUT echoed back the entries we sent). Skip a re-render so the
+      // "Saved." status stays visible to the user.
+      statusEl.textContent = "Saved.";
+    } else {
+      statusEl.textContent = "Save failed: " + failed.join("; ");
+    }
+    saveBtn.disabled = false;
   }
 
   initPWA();
