@@ -181,10 +181,18 @@
     if (tierNum != null && currentState && currentState.transitioning && currentState.current_tier > 0) {
       var dir = currentState.direction;
       var curTier = currentState.current_tier;
+      // Single-tier actions ("waking" / "sleeping") only touch instances
+      // in the matching tier — other tiers stay in their resting state.
+      // The night-* sweeps are the ones that queue other tiers as
+      // "pending" because they walk every tier in turn.
       if (dir === "waking") {
+        if (tierNum === curTier && inst.status !== "running") dotClass = "processing";
+      } else if (dir === "sleeping") {
+        if (tierNum === curTier && inst.status !== "stopped") dotClass = "stopping";
+      } else if (dir === "night-waking") {
         if (tierNum > curTier) dotClass = "pending";
         else if (tierNum === curTier && inst.status !== "running") dotClass = "processing";
-      } else if (dir === "sleeping") {
+      } else if (dir === "night-sleeping") {
         if (tierNum < curTier) dotClass = "pending";
         else if (tierNum === curTier && inst.status !== "stopped") dotClass = "stopping";
       }
