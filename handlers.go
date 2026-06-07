@@ -544,11 +544,41 @@ func (o *Orchestrator) doNightWake() {
 	o.clearStuck()
 
 	_, nonExempt := o.partitionByExemption()
+	// Drop instances whose tier is flagged manual_only — those wake only
+	// via explicit WakeTier (master toggle on the tier card, per-tier
+	// schedule, or the CLI).
+	if o.hasManualOnlyTier() {
+		filtered := make([]Instance, 0, len(nonExempt))
+		for _, inst := range nonExempt {
+			if !o.isTierManualOnly(inst.Tier) {
+				filtered = append(filtered, inst)
+			}
+		}
+		nonExempt = filtered
+	}
 	o.processSubset(nonExempt, "start")
 
 	o.recordStuck(o.verifySubset(nonExempt, "running"))
 
 	log.Println("night wake complete")
+}
+
+func (o *Orchestrator) hasManualOnlyTier() bool {
+	for _, td := range o.tierDefs {
+		if td.ManualOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) isTierManualOnly(tier int) bool {
+	for _, td := range o.tierDefs {
+		if td.Tier == tier {
+			return td.ManualOnly
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) endTransition() {

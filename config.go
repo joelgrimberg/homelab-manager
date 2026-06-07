@@ -49,6 +49,12 @@ type TierConfig struct {
 	Tags []string `yaml:"tags,omitempty"`
 	Tier int      `yaml:"tier"`
 	Name string   `yaml:"name"`
+	// ManualOnly opts the tier out of global `night_wake` (and therefore
+	// the big Awake/Night toggle in the PWA). Instances in this tier
+	// will not be auto-started when night mode is exited. Per-tier
+	// scheduled wakes and explicit WakeTier calls (master toggle on the
+	// tier's card / CLI / per-tier API) still work.
+	ManualOnly bool `yaml:"manual_only,omitempty"`
 	// Schedule entries fire wake/sleep against this tier only. Actions
 	// allowed here are "wake", "sleep", and "" (notify-only). Read at
 	// startup; not editable via /api/schedule (which writes the global

@@ -674,6 +674,87 @@ func TestNightWakeStartsOnlyNonExempt(t *testing.T) {
 	}
 }
 
+// TestNightWakeSkipsManualOnlyTiers: tier 2 carries manual_only=true, so
+// NightWake should leave its instances alone — but tier 1's non-exempt
+// VM should still come up.
+func TestNightWakeSkipsManualOnlyTiers(t *testing.T) {
+	mock := newMockProxmox(map[int]string{
+		300: "running", 301: "stopped", 100: "stopped", 120: "running", 122: "running",
+	})
+	instances, tierNames := nightTestInstances()
+	tierDefs := []TierConfig{
+		{Tier: 1, Name: "infra", Tag: "infra"},
+		{Tier: 2, Name: "local-omni", Tag: "local-omni", ManualOnly: true},
+		{Tier: 3, Name: "homelab", Tag: "homelab"},
+	}
+	orch := NewOrchestrator(instances, tierNames, tierDefs, []string{"dns", "homelab"}, nil, mock)
+	orch.wakeTierDelay = 0
+	orch.sleepTierDelay = 0
+
+	if _, unconf := orch.NightWake(); unconf {
+		t.Fatal("unexpected unconfigured")
+	}
+	for i := 0; i < 100; i++ {
+		if !orch.isTransitioning() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mock.mu.Lock()
+	started := append([]int(nil), mock.started...)
+	mock.mu.Unlock()
+	startedSet := map[int]bool{}
+	for _, id := range started {
+		startedSet[id] = true
+	}
+	if !startedSet[301] {
+		t.Errorf("tier 1 non-exempt VM 301 should still wake; started=%v", started)
+	}
+	if startedSet[100] {
+		t.Errorf("tier 2 (manual_only) VM 100 should NOT wake on NightWake; started=%v", started)
+	}
+}
+
+// TestWakeTierStillWorksOnManualOnlyTier: explicit per-tier wake bypasses
+// the manual_only filter — that's the whole point (manual_only blocks the
+// global path, not direct ones).
+func TestWakeTierStillWorksOnManualOnlyTier(t *testing.T) {
+	mock := newMockProxmox(map[int]string{100: "stopped"})
+	instances := []Instance{
+		{VMID: 100, Name: "omni-cp-a", Type: "qemu", Tier: 2, Tags: []string{"local-omni"}},
+	}
+	tierNames := map[int]string{2: "local-omni"}
+	tierDefs := []TierConfig{
+		{Tier: 2, Name: "local-omni", Tag: "local-omni", ManualOnly: true},
+	}
+	orch := NewOrchestrator(instances, tierNames, tierDefs, nil, nil, mock)
+	orch.wakeTierDelay = 0
+
+	if started, unknown := orch.WakeTier(2); unknown || !started {
+		t.Fatalf("WakeTier(2) returned started=%v unknown=%v", started, unknown)
+	}
+	for i := 0; i < 100; i++ {
+		if !orch.isTransitioning() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mock.mu.Lock()
+	started := append([]int(nil), mock.started...)
+	mock.mu.Unlock()
+	found := false
+	for _, id := range started {
+		if id == 100 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("WakeTier should start VM 100 even on a manual_only tier; started=%v", started)
+	}
+}
+
 func TestComputeStateNight(t *testing.T) {
 	tiers := []TierStatus{
 		{Tier: 1, Instances: []InstanceStatus{
