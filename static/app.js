@@ -760,9 +760,8 @@
   // each row's <input data-group="..." data-idx="..."> so the change
   // listener can mutate the right object.
   function renderScheduleSection(label, group, entries) {
-    if (!entries || entries.length === 0) return "";
     let html = `<div class="schedule-section-label">${escapeHtml(label)}</div>`;
-    entries.forEach((entry, idx) => {
+    (entries || []).forEach((entry, idx) => {
       const t = cronToTime(entry.cron);
       const isDaily = t !== null;
       html += `<div class="schedule-row${isDaily ? "" : " advanced"}">`;
@@ -772,8 +771,26 @@
       } else {
         html += `<input type="text" class="schedule-row-time" data-group="${group}" data-idx="${idx}" value="${escapeHtml(entry.cron)}">`;
       }
+      html += `<button type="button" class="schedule-row-delete" data-group="${group}" data-idx="${idx}" aria-label="Delete entry">&times;</button>`;
       html += `</div>`;
     });
+    // Add-entry form — collapsed by default. Action options are scoped:
+    // global → night_sleep / night_wake; tier → wake / sleep.
+    const isGlobal = group === "global";
+    const actionOptions = isGlobal
+      ? `<option value="">Notify only</option><option value="night_sleep">Night sleep</option><option value="night_wake">Night wake</option>`
+      : `<option value="">Notify only</option><option value="wake">Wake tier</option><option value="sleep">Sleep tier</option>`;
+    html += `<div class="schedule-add" data-group="${group}">`;
+    html += `<button type="button" class="schedule-add-btn">+ Add entry</button>`;
+    html += `<div class="schedule-add-form" hidden>`;
+    html += `<input type="text" class="schedule-add-name" placeholder="Name (e.g. ${isGlobal ? "night-warning" : "tier-wake"})">`;
+    html += `<select class="schedule-add-action">${actionOptions}</select>`;
+    html += `<input type="time" class="schedule-add-time" value="21:00">`;
+    html += `<input type="text" class="schedule-add-notify" placeholder="Push notification text (optional)">`;
+    html += `<div class="schedule-add-actions">`;
+    html += `<button type="button" class="schedule-add-cancel">Cancel</button>`;
+    html += `<button type="button" class="schedule-add-confirm push-btn">Add</button>`;
+    html += `</div></div></div>`;
     return html;
   }
 
@@ -784,9 +801,6 @@
       const label = `Tier ${t.tier} · ${t.name}`;
       html += renderScheduleSection(label, `tier-${t.tier}`, t.schedule);
     });
-    if (!html) {
-      html = `<div class="schedule-section-label">No schedule entries configured.</div>`;
-    }
     html += `<div class="schedule-save">`;
     html += `<span class="schedule-status" id="schedule-status"></span>`;
     html += `<button type="button" class="push-btn" id="schedule-save-btn">Save</button>`;
@@ -810,8 +824,81 @@
       });
     });
 
+    scheduleBody.querySelectorAll(".schedule-row-delete").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        const group = e.currentTarget.dataset.group;
+        const idx = parseInt(e.currentTarget.dataset.idx, 10);
+        deleteEntry(group, idx);
+      });
+    });
+
+    scheduleBody.querySelectorAll(".schedule-add").forEach((box) => {
+      const group = box.dataset.group;
+      const btn = box.querySelector(".schedule-add-btn");
+      const form = box.querySelector(".schedule-add-form");
+      btn.addEventListener("click", () => {
+        form.hidden = false;
+        btn.hidden = true;
+        form.querySelector(".schedule-add-name").focus();
+      });
+      box.querySelector(".schedule-add-cancel").addEventListener("click", () => {
+        form.hidden = true;
+        btn.hidden = false;
+      });
+      box.querySelector(".schedule-add-confirm").addEventListener("click", () => {
+        const name = form.querySelector(".schedule-add-name").value.trim();
+        const action = form.querySelector(".schedule-add-action").value;
+        const time = form.querySelector(".schedule-add-time").value;
+        const notify = form.querySelector(".schedule-add-notify").value.trim();
+        addEntry(group, { name, action, time, notify });
+      });
+    });
+
     const saveBtn = document.getElementById("schedule-save-btn");
     saveBtn.addEventListener("click", saveSchedule);
+  }
+
+  function sectionArray(group) {
+    if (group === "global") return scheduleData.global;
+    const m = /^tier-(\d+)$/.exec(group);
+    if (!m) return null;
+    const tn = parseInt(m[1], 10);
+    const t = scheduleData.tiers.find((x) => x.tier === tn);
+    return t ? t.schedule : null;
+  }
+
+  function addEntry(group, fields) {
+    const arr = sectionArray(group);
+    if (!arr) return;
+    if (!fields.name) {
+      alert("Name is required.");
+      return;
+    }
+    if (!fields.action && !fields.notify) {
+      alert("Either action or a notification message is required.");
+      return;
+    }
+    if (arr.some((e) => e.name === fields.name)) {
+      alert("An entry with that name already exists in this section.");
+      return;
+    }
+    const cron = timeToCron(fields.time);
+    if (!cron) {
+      alert("Pick a valid time.");
+      return;
+    }
+    const entry = { name: fields.name, cron };
+    if (fields.action) entry.action = fields.action;
+    if (fields.notify) entry.notify = fields.notify;
+    arr.push(entry);
+    renderSchedule();
+  }
+
+  function deleteEntry(group, idx) {
+    const arr = sectionArray(group);
+    if (!arr) return;
+    arr.splice(idx, 1);
+    renderSchedule();
   }
 
   function entryAt(group, idx) {
@@ -828,14 +915,14 @@
     const statusEl = document.getElementById("schedule-status");
     saveBtn.disabled = true;
     statusEl.textContent = "Saving…";
+    // Every section is PUT, including empty ones, so that "delete the last
+    // entry on a tier" persists (server treats empty PUT as "clear this
+    // tier's schedule"; no-op when nothing was there to begin with).
     const requests = [
-      { url: "/api/schedule", body: scheduleData.global, label: "global" },
+      { url: "/api/schedule", body: scheduleData.global || [], label: "global" },
     ];
     scheduleData.tiers.forEach((t) => {
-      // Only PUT tiers that had entries — empty PUT would clear server-side.
-      if (t.schedule && t.schedule.length > 0) {
-        requests.push({ url: `/api/tiers/${t.tier}/schedule`, body: t.schedule, label: `tier ${t.tier}` });
-      }
+      requests.push({ url: `/api/tiers/${t.tier}/schedule`, body: t.schedule || [], label: `tier ${t.tier}` });
     });
     const failed = [];
     for (const req of requests) {

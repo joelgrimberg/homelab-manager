@@ -821,6 +821,77 @@ h1 {
   opacity: 0.7;
 }
 
+.schedule-row-delete {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.schedule-row-delete:hover {
+  opacity: 1;
+  color: var(--red);
+}
+
+/* Per-section "+ Add entry" affordance + inline form */
+.schedule-add {
+  padding: 12px 0 4px;
+}
+.schedule-add-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px dashed var(--glass-border);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+.schedule-add-btn:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+.schedule-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 4px;
+}
+.schedule-add-form input[type="text"],
+.schedule-add-form input[type="time"],
+.schedule-add-form select {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.schedule-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.schedule-add-cancel {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
 .schedule-save {
   display: flex;
   justify-content: flex-end;
