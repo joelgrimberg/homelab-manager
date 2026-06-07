@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -10,10 +11,22 @@ import (
 )
 
 // ActionRunner is the subset of Orchestrator the scheduler invokes. Kept
-// narrow so tests can stub it.
+// narrow so tests can stub it. NightSleep/NightWake operate across all
+// tiers; WakeTier/SleepTier operate on the named tier only.
 type ActionRunner interface {
 	NightSleep() (bool, bool)
 	NightWake() (bool, bool)
+	WakeTier(tier int) (bool, bool)
+	SleepTier(tier int) (bool, bool)
+}
+
+// scopedEntry pairs a ScheduleEntry with the tier it targets. Tier == 0
+// means the entry was loaded from the top-level `schedule:` list and the
+// action is global (night_sleep / night_wake). Tier > 0 means the entry
+// came from `tiers[].schedule` and the action targets that tier only.
+type scopedEntry struct {
+	ScheduleEntry
+	Tier int
 }
 
 // Notifier abstracts PushManager for tests.
@@ -30,11 +43,15 @@ type ActionNotifier interface {
 }
 
 // Scheduler owns a robfig/cron.Cron and the current entry list. Reload is
-// safe to call from request handlers while jobs may be firing.
+// safe to call from request handlers while jobs may be firing. Global and
+// per-tier entries live side by side; PUT /api/schedule only replaces the
+// global list, while per-tier entries are read once at startup from
+// `tiers[].schedule` and stay put across reloads.
 type Scheduler struct {
 	mu      sync.Mutex
 	cron    *cron.Cron
-	entries []ScheduleEntry
+	global  []ScheduleEntry
+	perTier map[int][]ScheduleEntry
 	orch    ActionRunner
 	notify  Notifier
 	snooze  *SnoozeManager
@@ -52,31 +69,42 @@ func NewScheduler(orch ActionRunner, notify Notifier, snooze *SnoozeManager) *Sc
 	return s
 }
 
-// Start registers entries and begins firing.
-func (s *Scheduler) Start(entries []ScheduleEntry) error {
-	return s.Reload(entries)
+// Start registers entries and begins firing. Convenience wrapper used at
+// startup to load the global and per-tier lists in a single call.
+func (s *Scheduler) Start(global []ScheduleEntry, perTier map[int][]ScheduleEntry) error {
+	return s.rebuild(global, perTier)
 }
 
-// Reload replaces the running entries atomically. Validates every cron
-// expression before swapping; on any parse error the previous schedule
-// stays active.
-func (s *Scheduler) Reload(entries []ScheduleEntry) error {
-	// Build a fresh cron with each entry pre-validated so we don't end up
-	// with a half-loaded scheduler if one expression is bad.
+// Reload replaces the running global entries atomically while preserving
+// the per-tier ones. Used by PUT /api/schedule, which only round-trips
+// the top-level `schedule:` block.
+func (s *Scheduler) Reload(global []ScheduleEntry) error {
+	s.mu.Lock()
+	perTier := s.perTier
+	s.mu.Unlock()
+	return s.rebuild(global, perTier)
+}
+
+// rebuild flattens global + per-tier entries into a single scoped list,
+// validates every cron expression and action before swapping; on any
+// error the previous schedule stays active.
+func (s *Scheduler) rebuild(global []ScheduleEntry, perTier map[int][]ScheduleEntry) error {
+	scoped := flatten(global, perTier)
+
 	c := cron.New(cron.WithLocation(time.Local))
-	for i, e := range entries {
-		if e.Cron == "" {
-			return fmt.Errorf("entry %d (%s): cron is required", i, e.Name)
+	for i, se := range scoped {
+		if se.Cron == "" {
+			return fmt.Errorf("entry %d (%s): cron is required", i, se.Name)
 		}
-		if e.Action == "" && e.Notify == "" {
-			return fmt.Errorf("entry %d (%s): must specify action and/or notify", i, e.Name)
+		if se.Action == "" && se.Notify == "" {
+			return fmt.Errorf("entry %d (%s): must specify action and/or notify", i, se.Name)
 		}
-		if err := validateAction(e.Action); err != nil {
-			return fmt.Errorf("entry %d (%s): %w", i, e.Name, err)
+		if err := validateAction(se.Action, se.Tier > 0); err != nil {
+			return fmt.Errorf("entry %d (%s): %w", i, se.Name, err)
 		}
-		entry := e // capture
-		if _, err := c.AddFunc(e.Cron, func() { s.run(entry) }); err != nil {
-			return fmt.Errorf("entry %d (%s): invalid cron %q: %w", i, e.Name, e.Cron, err)
+		entry := se // capture
+		if _, err := c.AddFunc(se.Cron, func() { s.runScoped(entry) }); err != nil {
+			return fmt.Errorf("entry %d (%s): invalid cron %q: %w", i, se.Name, se.Cron, err)
 		}
 	}
 
@@ -87,57 +115,120 @@ func (s *Scheduler) Reload(entries []ScheduleEntry) error {
 		<-ctx.Done()
 	}
 	s.cron = c
-	s.entries = entries
+	s.global = append([]ScheduleEntry(nil), global...)
+	s.perTier = clonePerTier(perTier)
 	c.Start()
-	log.Printf("scheduler: loaded %d entries (TZ=%s)", len(entries), time.Local.String())
+	log.Printf("scheduler: loaded %d global + %d tier entries (TZ=%s)", len(global), len(scoped)-len(global), time.Local.String())
 	return nil
 }
 
-// Entries returns the currently active schedule.
-func (s *Scheduler) Entries() []ScheduleEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]ScheduleEntry, len(s.entries))
-	copy(out, s.entries)
+// flatten returns global entries (Tier=0) followed by per-tier entries
+// ordered by tier number for deterministic registration and a stable
+// 1:1 mapping into cron.Entries() for NextFires.
+func flatten(global []ScheduleEntry, perTier map[int][]ScheduleEntry) []scopedEntry {
+	out := make([]scopedEntry, 0, len(global)+totalLen(perTier))
+	for _, e := range global {
+		out = append(out, scopedEntry{ScheduleEntry: e})
+	}
+	tiers := make([]int, 0, len(perTier))
+	for t := range perTier {
+		tiers = append(tiers, t)
+	}
+	sort.Ints(tiers)
+	for _, t := range tiers {
+		for _, e := range perTier[t] {
+			out = append(out, scopedEntry{ScheduleEntry: e, Tier: t})
+		}
+	}
 	return out
 }
 
+func totalLen(m map[int][]ScheduleEntry) int {
+	n := 0
+	for _, v := range m {
+		n += len(v)
+	}
+	return n
+}
+
+func clonePerTier(m map[int][]ScheduleEntry) map[int][]ScheduleEntry {
+	if m == nil {
+		return nil
+	}
+	out := make(map[int][]ScheduleEntry, len(m))
+	for k, v := range m {
+		out[k] = append([]ScheduleEntry(nil), v...)
+	}
+	return out
+}
+
+// Entries returns the global entries currently active. Per-tier entries
+// are config-file-only and intentionally not exposed here — the PWA
+// schedule editor edits and re-PUTs whatever Entries() returns, so
+// surfacing per-tier ones would silently flatten them on save.
+func (s *Scheduler) Entries() []ScheduleEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ScheduleEntry, len(s.global))
+	copy(out, s.global)
+	return out
+}
+
+// run is the legacy global-only fire path retained for tests. Production
+// fires go through runScoped via the cron callback.
 func (s *Scheduler) run(e ScheduleEntry) {
-	if s.snooze != nil && s.snooze.IsSuppressed(e.Name) {
-		log.Printf("scheduler: %q suppressed by snooze", e.Name)
+	s.runScoped(scopedEntry{ScheduleEntry: e})
+}
+
+func (s *Scheduler) runScoped(se scopedEntry) {
+	if s.snooze != nil && s.snooze.IsSuppressed(se.Name) {
+		log.Printf("scheduler: %q suppressed by snooze", se.Name)
 		return
 	}
 
-	log.Printf("scheduler: firing %q (action=%q)", e.Name, e.Action)
+	log.Printf("scheduler: firing %q (action=%q tier=%d)", se.Name, se.Action, se.Tier)
 
-	s.emitNotify(e)
+	s.emitNotify(se.ScheduleEntry)
 
-	s.dispatchAction(e)
+	s.dispatchAction(se)
 }
 
 // RunOnce fires the named entry's full run path (notify + action) bypassing
-// the snooze check — used as the callback for deferred fires.
+// the snooze check — used as the callback for deferred fires. Searches
+// global entries first, then per-tier, so a deferred snooze on a global
+// "night-sleep" entry still fires correctly.
 func (s *Scheduler) RunOnce(name string) {
 	s.mu.Lock()
-	var entry ScheduleEntry
-	found := false
-	for _, e := range s.entries {
+	var found *scopedEntry
+	for _, e := range s.global {
 		if e.Name == name {
-			entry = e
-			found = true
+			cp := scopedEntry{ScheduleEntry: e}
+			found = &cp
 			break
 		}
 	}
+	if found == nil {
+		for tier, entries := range s.perTier {
+			for _, e := range entries {
+				if e.Name == name {
+					cp := scopedEntry{ScheduleEntry: e, Tier: tier}
+					found = &cp
+					break
+				}
+			}
+			if found != nil {
+				break
+			}
+		}
+	}
 	s.mu.Unlock()
-	if !found {
+	if found == nil {
 		log.Printf("scheduler: RunOnce: no entry named %q", name)
 		return
 	}
-	// Bypass snooze: deferred fires must run even though their snooze
-	// entry was set with a SkipUntil covering this moment.
-	log.Printf("scheduler: deferred fire %q (action=%q)", entry.Name, entry.Action)
-	s.emitNotify(entry)
-	s.dispatchAction(entry)
+	log.Printf("scheduler: deferred fire %q (action=%q tier=%d)", found.Name, found.Action, found.Tier)
+	s.emitNotify(found.ScheduleEntry)
+	s.dispatchAction(*found)
 }
 
 // emitNotify sends the entry's notify message. If the entry declares a
@@ -168,21 +259,34 @@ func (s *Scheduler) emitNotify(e ScheduleEntry) {
 	an.NotifyWithActions("Homelab", e.Notify, data, actions)
 }
 
-// dispatchAction invokes the orchestrator method named by the entry.
-func (s *Scheduler) dispatchAction(e ScheduleEntry) {
-	switch e.Action {
+// dispatchAction invokes the orchestrator method named by the entry,
+// scoped to the entry's tier when applicable.
+func (s *Scheduler) dispatchAction(se scopedEntry) {
+	switch se.Action {
 	case "":
 	case "night_sleep":
 		if started, unconf := s.orch.NightSleep(); unconf {
-			log.Printf("scheduler: %s wanted night_sleep but night mode unconfigured", e.Name)
+			log.Printf("scheduler: %s wanted night_sleep but night mode unconfigured", se.Name)
 		} else if !started {
-			log.Printf("scheduler: %s night_sleep skipped — already transitioning", e.Name)
+			log.Printf("scheduler: %s night_sleep skipped — already transitioning", se.Name)
 		}
 	case "night_wake":
 		if started, unconf := s.orch.NightWake(); unconf {
-			log.Printf("scheduler: %s wanted night_wake but night mode unconfigured", e.Name)
+			log.Printf("scheduler: %s wanted night_wake but night mode unconfigured", se.Name)
 		} else if !started {
-			log.Printf("scheduler: %s night_wake skipped — already transitioning", e.Name)
+			log.Printf("scheduler: %s night_wake skipped — already transitioning", se.Name)
+		}
+	case "wake":
+		if started, unknown := s.orch.WakeTier(se.Tier); unknown {
+			log.Printf("scheduler: %s wanted wake but tier %d unknown", se.Name, se.Tier)
+		} else if !started {
+			log.Printf("scheduler: %s wake skipped — already transitioning", se.Name)
+		}
+	case "sleep":
+		if started, unknown := s.orch.SleepTier(se.Tier); unknown {
+			log.Printf("scheduler: %s wanted sleep but tier %d unknown", se.Name, se.Tier)
+		} else if !started {
+			log.Printf("scheduler: %s sleep skipped — already transitioning", se.Name)
 		}
 	}
 }
@@ -197,24 +301,36 @@ func (s *Scheduler) NextFires() map[string]time.Time {
 	if s.cron == nil {
 		return nil
 	}
-	// Walk cron entries in registration order; they map 1:1 to s.entries
-	// because Reload added them in order.
+	// Walk cron entries in registration order; they map 1:1 to the
+	// flattened scoped list (global first, then per-tier sorted by tier).
+	scoped := flatten(s.global, s.perTier)
 	cronEntries := s.cron.Entries()
 	out := make(map[string]time.Time, len(cronEntries))
 	for i, ce := range cronEntries {
-		if i >= len(s.entries) {
+		if i >= len(scoped) {
 			break
 		}
-		out[s.entries[i].Name] = ce.Next
+		out[scoped[i].Name] = ce.Next
 	}
 	return out
 }
 
-func validateAction(a string) error {
+// validateAction checks that `a` is permitted in the entry's scope.
+// Top-level entries (scope=false) may use night_sleep, night_wake, or "".
+// Per-tier entries (scope=true) may use wake, sleep, or "".
+func validateAction(a string, tierScope bool) error {
+	if tierScope {
+		switch a {
+		case "", "wake", "sleep":
+			return nil
+		default:
+			return fmt.Errorf("action %q not allowed under a tier (use wake, sleep, or empty)", a)
+		}
+	}
 	switch a {
 	case "", "night_sleep", "night_wake":
 		return nil
 	default:
-		return fmt.Errorf("unknown action %q (must be night_sleep, night_wake, or empty)", a)
+		return fmt.Errorf("action %q not allowed at top level (use night_sleep, night_wake, or empty)", a)
 	}
 }

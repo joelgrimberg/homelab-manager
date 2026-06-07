@@ -120,7 +120,13 @@ func cmdServe(args []string) {
 	}
 
 	sched := NewScheduler(orch, pm, snooze)
-	if err := sched.Start(cfg.Schedule); err != nil {
+	tierSchedules := map[int][]ScheduleEntry{}
+	for _, td := range cfg.TierDefs {
+		if len(td.Schedule) > 0 {
+			tierSchedules[td.Tier] = td.Schedule
+		}
+	}
+	if err := sched.Start(cfg.Schedule, tierSchedules); err != nil {
 		log.Fatalf("scheduler start: %v", err)
 	}
 	schedHandler := NewScheduleHandler(sched, *configPath)

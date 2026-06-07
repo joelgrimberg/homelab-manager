@@ -31,7 +31,7 @@ func newSnoozeFixture(t *testing.T) (*SnoozeHandler, *SnoozeManager, *Scheduler,
 	sched := NewScheduler(orch, &fakeNotifier{}, sm)
 	sched.Start([]ScheduleEntry{
 		{Name: "night-sleep", Cron: "5 21 * * *", Action: "night_sleep", Notify: "sleep"},
-	})
+	}, nil)
 	return NewSnoozeHandler(sm, sched, orch, nil), sm, sched, orch
 }
 
@@ -158,7 +158,7 @@ func TestSnoozeHandlerBlockedWhenAlreadyNight(t *testing.T) {
 	}
 	orch := NewOrchestrator(instances, map[int]string{1: "infra", 2: "other"}, nil, []string{"dns"}, nil, mock)
 	sched := NewScheduler(orch, &fakeNotifier{}, sm)
-	sched.Start(nil)
+	sched.Start(nil, nil)
 	h := NewSnoozeHandler(sm, sched, orch, nil)
 
 	body, _ := json.Marshal(map[string]any{
@@ -200,7 +200,7 @@ func TestSnoozeHandlerCancelFiresWhenCronAlreadyPassed(t *testing.T) {
 	sched := NewScheduler(orch, &fakeNotifier{}, sm)
 	sched.Start([]ScheduleEntry{
 		{Name: "night-sleep", Cron: "0 * * * *", Action: "night_sleep", Notify: "sleep"},
-	})
+	}, nil)
 	h := NewSnoozeHandler(sm, sched, orch, nil)
 
 	// Inject a snooze whose deferred fire is already in the past — i.e.
@@ -250,7 +250,7 @@ func TestSnoozeHandlerCancelDoesNotFireWhenCronStillAhead(t *testing.T) {
 	// well beyond that, so next < deferred → cron will handle today.
 	sched.Start([]ScheduleEntry{
 		{Name: "night-sleep", Cron: "* * * * *", Action: "night_sleep", Notify: "sleep"},
-	})
+	}, nil)
 	h := NewSnoozeHandler(sm, sched, orch, nil)
 
 	sm.mu.Lock()
@@ -292,7 +292,7 @@ func TestSnoozeHandlerCancelSkipTonightDoesNotFire(t *testing.T) {
 	sched := NewScheduler(orch, &fakeNotifier{}, sm)
 	sched.Start([]ScheduleEntry{
 		{Name: "night-sleep", Cron: "0 * * * *", Action: "night_sleep", Notify: "sleep"},
-	})
+	}, nil)
 	h := NewSnoozeHandler(sm, sched, orch, nil)
 
 	// Skip tonight: SkipUntil set, DeferredFireAt zero. The cron has

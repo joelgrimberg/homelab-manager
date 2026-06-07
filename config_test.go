@@ -117,6 +117,36 @@ tiers:
     tier: 1
     name: apps
 `},
+		{"night_sleep under tier", `
+proxmox:
+  url: https://example.com
+  node: pve
+  token_id: a
+  token_secret: b
+tiers:
+  - tag: "infra"
+    tier: 1
+    name: infra
+    schedule:
+      - name: bad
+        cron: "0 23 * * *"
+        action: night_sleep
+`},
+		{"wake at top level", `
+proxmox:
+  url: https://example.com
+  node: pve
+  token_id: a
+  token_secret: b
+tiers:
+  - tag: "infra"
+    tier: 1
+    name: infra
+schedule:
+  - name: bad
+    cron: "0 23 * * *"
+    action: wake
+`},
 	}
 
 	for _, tt := range tests {
@@ -127,6 +157,47 @@ tiers:
 				t.Error("expected error, got nil")
 			}
 		})
+	}
+}
+
+// TestLoadConfigTierSchedule asserts wake/sleep entries under a tier load
+// cleanly and end up on the right TierConfig.
+func TestLoadConfigTierSchedule(t *testing.T) {
+	yaml := `
+proxmox:
+  url: https://example.com
+  node: pve
+  token_id: a
+  token_secret: b
+tiers:
+  - tag: "infra"
+    tier: 1
+    name: infra
+    schedule:
+      - name: infra-wake
+        cron: "0 7 * * *"
+        action: wake
+      - name: infra-sleep
+        cron: "0 23 * * *"
+        action: sleep
+        notify: "Tier 1 sleeping"
+  - tag: "apps"
+    tier: 2
+    name: apps
+`
+	path := writeTestFile(t, "config.yaml", yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.TierDefs[0].Schedule) != 2 {
+		t.Fatalf("tier 1 schedule len = %d, want 2", len(cfg.TierDefs[0].Schedule))
+	}
+	if cfg.TierDefs[0].Schedule[0].Action != "wake" {
+		t.Errorf("first action = %q, want wake", cfg.TierDefs[0].Schedule[0].Action)
+	}
+	if cfg.TierDefs[1].Schedule != nil {
+		t.Errorf("tier 2 should have no schedule, got %v", cfg.TierDefs[1].Schedule)
 	}
 }
 

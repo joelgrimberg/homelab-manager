@@ -200,7 +200,7 @@ func TestSchedulerRunOnceBypassesSnooze(t *testing.T) {
 	s := NewScheduler(orch, noti, sm)
 
 	// Register the entry so RunOnce can find it.
-	s.Start([]ScheduleEntry{{Name: "ns", Cron: "5 21 * * *", Action: "night_sleep", Notify: "x"}})
+	s.Start([]ScheduleEntry{{Name: "ns", Cron: "5 21 * * *", Action: "night_sleep", Notify: "x"}}, nil)
 	s.RunOnce("ns")
 
 	if atomic.LoadInt32(&orch.nightSleeps) != 1 {

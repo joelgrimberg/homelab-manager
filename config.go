@@ -49,6 +49,11 @@ type TierConfig struct {
 	Tags []string `yaml:"tags,omitempty"`
 	Tier int      `yaml:"tier"`
 	Name string   `yaml:"name"`
+	// Schedule entries fire wake/sleep against this tier only. Actions
+	// allowed here are "wake", "sleep", and "" (notify-only). Read at
+	// startup; not editable via /api/schedule (which writes the global
+	// list only).
+	Schedule []ScheduleEntry `yaml:"schedule,omitempty"`
 }
 
 // AllTags returns the union of Tags and Tag — the full set of Proxmox
@@ -73,9 +78,11 @@ type WebPushConfig struct {
 	VAPIDSubject string `yaml:"vapid_subject"`
 }
 
-// ScheduleEntry is one cron-driven job. Action is one of "", "night_sleep",
-// "night_wake", "wake", "sleep". Notify, if non-empty, is sent as a push
-// when the entry fires.
+// ScheduleEntry is one cron-driven job. Allowed values for Action depend
+// on where the entry lives: top-level `schedule:` permits "night_sleep",
+// "night_wake", or ""; an entry under `tiers[].schedule` permits "wake",
+// "sleep", or "". Notify, if non-empty, is sent as a push when the entry
+// fires.
 //
 // SnoozeTarget/SnoozeMinutes/WarnBefore are optional and turn the notify
 // push into an actionable one with a Snooze button targeting another entry
@@ -250,6 +257,20 @@ func (c *Config) validate() error {
 			return fmt.Errorf("tiers[%d]: duplicate tier number %d", i, td.Tier)
 		}
 		seen[td.Tier] = true
+		for j, e := range td.Schedule {
+			switch e.Action {
+			case "", "wake", "sleep":
+			default:
+				return fmt.Errorf("tiers[%d].schedule[%d] (%s): action %q not allowed under a tier (use wake, sleep, or empty)", i, j, e.Name, e.Action)
+			}
+		}
+	}
+	for i, e := range c.Schedule {
+		switch e.Action {
+		case "", "night_sleep", "night_wake":
+		default:
+			return fmt.Errorf("schedule[%d] (%s): action %q not allowed at top level (use night_sleep, night_wake, or empty; per-tier wake/sleep belongs under tiers[].schedule)", i, e.Name, e.Action)
+		}
 	}
 	return nil
 }

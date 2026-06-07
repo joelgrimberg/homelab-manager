@@ -24,7 +24,7 @@ func writeTempConfig(t *testing.T, body string) string {
 func TestScheduleHandlerGetReturnsEntries(t *testing.T) {
 	sched := NewScheduler(&fakeOrch{}, &fakeNotifier{}, nil)
 	entries := []ScheduleEntry{{Name: "n", Cron: "0 7 * * *", Action: "night_wake"}}
-	if err := sched.Start(entries); err != nil {
+	if err := sched.Start(entries, nil); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
@@ -47,7 +47,7 @@ func TestScheduleHandlerGetReturnsEntries(t *testing.T) {
 
 func TestScheduleHandlerPutBadCronReturns400(t *testing.T) {
 	sched := NewScheduler(&fakeOrch{}, &fakeNotifier{}, nil)
-	sched.Start(nil)
+	sched.Start(nil, nil)
 	h := NewScheduleHandler(sched, "")
 
 	body, _ := json.Marshal([]ScheduleEntry{
@@ -85,7 +85,7 @@ schedule:
 	path := writeTempConfig(t, cfgYAML)
 
 	sched := NewScheduler(&fakeOrch{}, &fakeNotifier{}, nil)
-	sched.Start(nil)
+	sched.Start(nil, nil)
 	h := NewScheduleHandler(sched, path)
 
 	newEntries := []ScheduleEntry{
@@ -124,7 +124,7 @@ schedule:
 
 func TestScheduleHandlerMethodNotAllowed(t *testing.T) {
 	sched := NewScheduler(&fakeOrch{}, &fakeNotifier{}, nil)
-	sched.Start(nil)
+	sched.Start(nil, nil)
 	h := NewScheduleHandler(sched, "")
 	req := httptest.NewRequest("DELETE", "/api/schedule", nil)
 	w := httptest.NewRecorder()

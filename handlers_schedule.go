@@ -45,7 +45,7 @@ func (h *ScheduleHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "entry "+e.Name+": invalid cron: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := validateAction(e.Action); err != nil {
+			if err := validateAction(e.Action, false); err != nil {
 				http.Error(w, "entry "+e.Name+": "+err.Error(), http.StatusBadRequest)
 				return
 			}

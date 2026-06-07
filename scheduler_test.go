@@ -10,10 +10,38 @@ import (
 type fakeOrch struct {
 	nightSleeps int32
 	nightWakes  int32
+	tierWakes   sync.Map // tier int → *int32
+	tierSleeps  sync.Map
 }
 
 func (f *fakeOrch) NightSleep() (bool, bool) { atomic.AddInt32(&f.nightSleeps, 1); return true, false }
 func (f *fakeOrch) NightWake() (bool, bool)  { atomic.AddInt32(&f.nightWakes, 1); return true, false }
+
+func (f *fakeOrch) WakeTier(tier int) (bool, bool) {
+	v, _ := f.tierWakes.LoadOrStore(tier, new(int32))
+	atomic.AddInt32(v.(*int32), 1)
+	return true, false
+}
+func (f *fakeOrch) SleepTier(tier int) (bool, bool) {
+	v, _ := f.tierSleeps.LoadOrStore(tier, new(int32))
+	atomic.AddInt32(v.(*int32), 1)
+	return true, false
+}
+
+func (f *fakeOrch) tierWakeCount(tier int) int32 {
+	v, ok := f.tierWakes.Load(tier)
+	if !ok {
+		return 0
+	}
+	return atomic.LoadInt32(v.(*int32))
+}
+func (f *fakeOrch) tierSleepCount(tier int) int32 {
+	v, ok := f.tierSleeps.Load(tier)
+	if !ok {
+		return 0
+	}
+	return atomic.LoadInt32(v.(*int32))
+}
 
 type fakeNotifier struct {
 	mu       sync.Mutex
@@ -110,7 +138,7 @@ func TestSchedulerReloadValidatesCron(t *testing.T) {
 	}
 
 	bad := []ScheduleEntry{
-		{Name: "junk", Cron: "not a cron", Action: "wake"},
+		{Name: "junk", Cron: "not a cron", Action: "night_wake"},
 	}
 	if err := s.Reload(bad); err == nil {
 		t.Fatal("bad cron should have failed reload")
@@ -218,6 +246,99 @@ func TestEmitNotifyFallsBackWithoutActionNotifier(t *testing.T) {
 
 	if msgs := noti.snapshot(); len(msgs) != 1 || msgs[0][1] != "Sleeping in 15 min" {
 		t.Errorf("plain notifier got %v", msgs)
+	}
+}
+
+// TestSchedulerTierWakeSleepDispatch fires per-tier wake/sleep entries via
+// the cron callback path (Start → cron-AddFunc → runScoped → dispatchAction)
+// and verifies the right orchestrator method is called with the right tier.
+func TestSchedulerTierWakeSleepDispatch(t *testing.T) {
+	orch := &fakeOrch{}
+	s := NewScheduler(orch, &fakeNotifier{}, nil)
+
+	perTier := map[int][]ScheduleEntry{
+		2: {
+			{Name: "t2-wake", Cron: "0 7 * * *", Action: "wake"},
+			{Name: "t2-sleep", Cron: "0 23 * * *", Action: "sleep"},
+		},
+		3: {
+			{Name: "t3-sleep", Cron: "0 22 * * *", Action: "sleep"},
+		},
+	}
+	if err := s.Start(nil, perTier); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	s.runScoped(scopedEntry{ScheduleEntry: perTier[2][0], Tier: 2})
+	s.runScoped(scopedEntry{ScheduleEntry: perTier[2][1], Tier: 2})
+	s.runScoped(scopedEntry{ScheduleEntry: perTier[3][0], Tier: 3})
+
+	if got := orch.tierWakeCount(2); got != 1 {
+		t.Errorf("tier-2 wake count = %d, want 1", got)
+	}
+	if got := orch.tierSleepCount(2); got != 1 {
+		t.Errorf("tier-2 sleep count = %d, want 1", got)
+	}
+	if got := orch.tierSleepCount(3); got != 1 {
+		t.Errorf("tier-3 sleep count = %d, want 1", got)
+	}
+	if got := orch.tierWakeCount(3); got != 0 {
+		t.Errorf("tier-3 wake count = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&orch.nightSleeps); got != 0 {
+		t.Errorf("global nightSleeps = %d, want 0", got)
+	}
+}
+
+// TestSchedulerActionScopeRejected ensures global actions can't be loaded
+// under a tier and tier actions can't be loaded at top level.
+func TestSchedulerActionScopeRejected(t *testing.T) {
+	s := NewScheduler(&fakeOrch{}, &fakeNotifier{}, nil)
+
+	if err := s.Reload([]ScheduleEntry{{Name: "x", Cron: "0 7 * * *", Action: "wake"}}); err == nil {
+		t.Error("wake at top level should be rejected")
+	}
+	if err := s.Reload([]ScheduleEntry{{Name: "y", Cron: "0 7 * * *", Action: "sleep"}}); err == nil {
+		t.Error("sleep at top level should be rejected")
+	}
+
+	err := s.Start(nil, map[int][]ScheduleEntry{
+		1: {{Name: "z", Cron: "0 7 * * *", Action: "night_sleep"}},
+	})
+	if err == nil {
+		t.Error("night_sleep under tier should be rejected")
+	}
+}
+
+// TestSchedulerReloadPreservesPerTier verifies that a PUT-style global
+// reload doesn't clobber the per-tier entries loaded at startup.
+func TestSchedulerReloadPreservesPerTier(t *testing.T) {
+	orch := &fakeOrch{}
+	s := NewScheduler(orch, &fakeNotifier{}, nil)
+
+	perTier := map[int][]ScheduleEntry{
+		1: {{Name: "t1-sleep", Cron: "0 23 * * *", Action: "sleep"}},
+	}
+	if err := s.Start([]ScheduleEntry{{Name: "g", Cron: "0 21 * * *", Action: "night_sleep"}}, perTier); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// PUT-style reload with a different global set; per-tier should stay.
+	if err := s.Reload([]ScheduleEntry{{Name: "g2", Cron: "5 21 * * *", Action: "night_wake"}}); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Entries() returns global only.
+	got := s.Entries()
+	if len(got) != 1 || got[0].Name != "g2" {
+		t.Errorf("Entries() = %v, want [g2]", got)
+	}
+
+	// Per-tier entry should still fire when its cron triggers — simulate
+	// by calling runScoped directly.
+	s.runScoped(scopedEntry{ScheduleEntry: perTier[1][0], Tier: 1})
+	if got := orch.tierSleepCount(1); got != 1 {
+		t.Errorf("tier-1 sleep count after reload = %d, want 1", got)
 	}
 }
 
